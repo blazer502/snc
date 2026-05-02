@@ -175,6 +175,168 @@ void Simulator::grow_volume(int dx, int dy, int dz) {
   vz_hi_ += dz;
 }
 
+bool Simulator::shrink_volume(int dx, int dy, int dz) {
+  // Mirror of grow_volume: trim `dx` voxels from each side along x, etc.
+  // The to-be-removed rim must be empty (state EMPTY) -- otherwise
+  // tissue would be silently destroyed, which is never the right call.
+  const int R = cfg_.region_size;
+  if (dx < 0 || dy < 0 || dz < 0) return false;
+  if (dx == 0 && dy == 0 && dz == 0) return true;
+  if (dx % R != 0 || dy % R != 0 || dz % R != 0) return false;
+  const int newX = cfg_.X - 2 * dx;
+  const int newY = cfg_.Y - 2 * dy;
+  const int newZ = cfg_.Z - 2 * dz;
+  if (newX <= 0 || newY <= 0 || newZ <= 0) return false;
+
+  // Verify that every voxel falling outside the keep region is EMPTY.
+  for (int z = 0; z < cfg_.Z; ++z) {
+    const bool keep_z = (z >= dz && z < cfg_.Z - dz);
+    for (int y = 0; y < cfg_.Y; ++y) {
+      const bool keep_y = (y >= dy && y < cfg_.Y - dy);
+      for (int x = 0; x < cfg_.X; ++x) {
+        const bool keep_x = (x >= dx && x < cfg_.X - dx);
+        if (keep_x && keep_y && keep_z) continue;
+        if (grid_.get(x, y, z) != BrainGrid::EMPTY) return false;
+      }
+    }
+  }
+
+  BrainGrid new_grid(newX, newY, newZ);
+  for (int z = 0; z < newZ; ++z) {
+    for (int y = 0; y < newY; ++y) {
+      for (int x = 0; x < newX; ++x) {
+        const auto c = grid_.get(x + dx, y + dy, z + dz);
+        if (c != BrainGrid::EMPTY) new_grid.set(x, y, z, c);
+      }
+    }
+  }
+
+  EnergyField new_energy(newX, newY, newZ, R, cfg_.energy_max);
+  const int rdx = dx / R, rdy = dy / R, rdz = dz / R;
+  for (int rz = 0; rz < new_energy.rZ(); ++rz) {
+    for (int ry = 0; ry < new_energy.rY(); ++ry) {
+      for (int rx = 0; rx < new_energy.rX(); ++rx) {
+        new_energy.at(rx, ry, rz) = energy_.at(rx + rdx, ry + rdy, rz + rdz);
+      }
+    }
+  }
+
+  std::vector<uint32_t> new_owner(
+      static_cast<std::size_t>(newX) * newY * newZ, 0u);
+  auto new_lin = [&](int x, int y, int z) {
+    return static_cast<std::size_t>(x) +
+           static_cast<std::size_t>(y) * newX +
+           static_cast<std::size_t>(z) * newX * newY;
+  };
+  for (int z = 0; z < newZ; ++z) {
+    for (int y = 0; y < newY; ++y) {
+      for (int x = 0; x < newX; ++x) {
+        new_owner[new_lin(x, y, z)] =
+            owner_[lin(x + dx, y + dy, z + dz)];
+      }
+    }
+  }
+
+  for (Neuron& nu : neurons_) {
+    nu.soma.x = static_cast<int16_t>(nu.soma.x - dx);
+    nu.soma.y = static_cast<int16_t>(nu.soma.y - dy);
+    nu.soma.z = static_cast<int16_t>(nu.soma.z - dz);
+    for (Voxel& v : nu.body) {
+      v.x = static_cast<int16_t>(v.x - dx);
+      v.y = static_cast<int16_t>(v.y - dy);
+      v.z = static_cast<int16_t>(v.z - dz);
+    }
+    for (SynapseEdge& e : nu.outgoing) {
+      e.pos.x = static_cast<int16_t>(e.pos.x - dx);
+      e.pos.y = static_cast<int16_t>(e.pos.y - dy);
+      e.pos.z = static_cast<int16_t>(e.pos.z - dz);
+    }
+  }
+
+  cfg_.X = newX;
+  cfg_.Y = newY;
+  cfg_.Z = newZ;
+  grid_ = std::move(new_grid);
+  energy_ = std::move(new_energy);
+  owner_ = std::move(new_owner);
+  vz_lo_ -= dz; if (vz_lo_ < 0) vz_lo_ = 0;
+  vz_hi_ -= dz; if (vz_hi_ < 0) vz_hi_ = 0;
+  return true;
+}
+
+namespace {
+
+// Iterative flood-fill over a 3D NEURON-state grid: returns either a
+// single component count or a vector of component sizes, depending on
+// the caller's appetite. Static helper so the public functions stay
+// tiny.
+void flood_components(const BrainGrid& g, std::vector<int>* sizes,
+                       int* count) {
+  const int X = g.X(), Y = g.Y(), Z = g.Z();
+  const std::size_t N = static_cast<std::size_t>(X) * Y * Z;
+  std::vector<uint8_t> visited(N, 0);
+  std::vector<int> stack;
+  stack.reserve(64);
+  auto idx = [&](int x, int y, int z) {
+    return static_cast<std::size_t>(x) +
+           static_cast<std::size_t>(y) * X +
+           static_cast<std::size_t>(z) * X * Y;
+  };
+  static constexpr int kDx[6] = { 1, -1, 0, 0, 0, 0};
+  static constexpr int kDy[6] = { 0, 0, 1, -1, 0, 0};
+  static constexpr int kDz[6] = { 0, 0, 0, 0, 1, -1};
+  int n_components = 0;
+  for (int z = 0; z < Z; ++z) {
+    for (int y = 0; y < Y; ++y) {
+      for (int x = 0; x < X; ++x) {
+        if (visited[idx(x, y, z)]) continue;
+        if (g.get(x, y, z) != BrainGrid::NEURON) continue;
+        ++n_components;
+        int component_size = 0;
+        stack.clear();
+        stack.push_back(static_cast<int>(idx(x, y, z)));
+        visited[idx(x, y, z)] = 1;
+        while (!stack.empty()) {
+          const int li = stack.back();
+          stack.pop_back();
+          ++component_size;
+          const int xx = li % X;
+          const int yy = (li / X) % Y;
+          const int zz = li / (X * Y);
+          for (int k = 0; k < 6; ++k) {
+            const int nx = xx + kDx[k];
+            const int ny = yy + kDy[k];
+            const int nz = zz + kDz[k];
+            if (nx < 0 || nx >= X || ny < 0 || ny >= Y ||
+                nz < 0 || nz >= Z) continue;
+            const std::size_t ni = idx(nx, ny, nz);
+            if (visited[ni]) continue;
+            if (g.get(nx, ny, nz) != BrainGrid::NEURON) continue;
+            visited[ni] = 1;
+            stack.push_back(static_cast<int>(ni));
+          }
+        }
+        if (sizes) sizes->push_back(component_size);
+      }
+    }
+  }
+  if (count) *count = n_components;
+}
+
+}  // namespace
+
+int Simulator::count_structural_neurons() const {
+  int c = 0;
+  flood_components(grid_, nullptr, &c);
+  return c;
+}
+
+std::vector<int> Simulator::structural_neuron_sizes() const {
+  std::vector<int> sizes;
+  flood_components(grid_, &sizes, nullptr);
+  return sizes;
+}
+
 void Simulator::seed_fetal(const FetalSeed& f) {
   // 1. Radial-glia scaffold. A small fraction of (x, y) columns are filled
   //    with BLOCKED voxels along z, representing the radial fibres that
@@ -244,7 +406,49 @@ void Simulator::seed_fetal(const FetalSeed& f) {
     place_in_band(cp_lo, cp_hi, 0);
   }
 
-  // 5. Energy gradient: high near the VZ (where neurogenesis burns glucose),
+  // 5. Innate subcortical / aversive nuclei. These cohorts represent the
+  //    DNA-determined neural primitives a fetus arrives with: brainstem
+  //    tonic generators, thalamic relay cells, and an amygdala-analogue
+  //    aversive nucleus. Each lives in a tiny dedicated volume near the
+  //    VZ floor, separate from the cortical body.
+  std::uniform_real_distribution<float> u01_inner(0.0f, 1.0f);
+
+  // Brainstem: a thin band on z=0..1, randomly scattered.
+  for (int i = 0; i < f.brainstem_neurons; ++i) {
+    place_in_band(0, std::min(1, cfg_.Z - 2), 0);
+  }
+  // Thalamic relay: at z = 1..2, a small (x, y) cluster.
+  for (int i = 0; i < f.thalamic_relay_neurons; ++i) {
+    place_in_band(std::min(1, cfg_.Z - 2),
+                  std::min(2, cfg_.Z - 2), 0);
+  }
+  // Amygdala-analogue aversive nucleus: also low z but offset.
+  for (int i = 0; i < f.aversive_nucleus_neurons; ++i) {
+    place_in_band(std::min(2, cfg_.Z - 2),
+                  std::min(3, cfg_.Z - 2), 0);
+  }
+
+  // 6. GABAergic subtype assignment. After all cortical placements are
+  //    done, randomly designate the configured fractions as PV, SST and
+  //    VIP. The remainder stays excitatory. Cell identity is permanent
+  //    (Dale's principle); demos can override per-neuron with
+  //    set_polarity() if they need specific layouts.
+  if (f.frac_pv + f.frac_sst + f.frac_vip > 0.0f) {
+    for (Neuron& nu : neurons_) {
+      const float r = u01_inner(rng_);
+      if (r < f.frac_pv) {
+        nu.polarity = NeuronPolarity::INHIBITORY;        // PV
+      } else if (r < f.frac_pv + f.frac_sst) {
+        nu.polarity = NeuronPolarity::INHIBITORY_SST;
+      } else if (r < f.frac_pv + f.frac_sst + f.frac_vip) {
+        nu.polarity = NeuronPolarity::INHIBITORY_VIP;
+      } else {
+        nu.polarity = NeuronPolarity::EXCITATORY;
+      }
+    }
+  }
+
+  // 7. Energy gradient: high near the VZ (where neurogenesis burns glucose),
   //    low near the cortical plate (which is metabolically quiet at this
   //    fetal stage). Scale is a fraction of `energy_max` so the regenerate
   //    cap continues to make sense.

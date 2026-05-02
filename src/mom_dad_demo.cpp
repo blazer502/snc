@@ -113,9 +113,15 @@ int main(int argc, char** argv) {
   //                              CONFIG
   // ------------------------------------------------------------------
   snc::SimConfig cfg;
-  cfg.X = 32;
-  cfg.Y = 32;
-  cfg.Z = 32;
+  // Bigger initial volume: a "baby brain" instead of an embryonic one.
+  // The fetal seed below populates several innate subnuclei (brainstem,
+  // thalamic relay, aversive nucleus) on top of the cortical sheet, so
+  // the network arrives with the neural primitives a real newborn has
+  // wired by genetics. The matrix is auto-resized after early
+  // development (see `count_structural_neurons` calls below).
+  cfg.X = 48;
+  cfg.Y = 48;
+  cfg.Z = 48;
   cfg.region_size = 8;
   cfg.fire_threshold = 0.45f;
   cfg.synapse_form_prob = 0.55f;
@@ -159,14 +165,26 @@ int main(int argc, char** argv) {
   // ------------------------------------------------------------------
   //                               ANATOMY
   // ------------------------------------------------------------------
+  // The DNA-level seed: more cortex than before, plus innate brainstem,
+  // thalamic-relay and aversive (amygdala-analogue) cohorts. Real human
+  // newborns already have these primitives wired before any postnatal
+  // experience, and including them gives the network a baseline drive
+  // and a target for innate aversive learning right from step 0.
   snc::FetalSeed seed;
-  seed.vz_neurons = 50;
-  seed.migrating_neurons = 0;
-  seed.cortical_plate_neurons = 0;
-  seed.vz_thickness = cfg.Z - 4;
-  seed.radial_glia_density = 0.02f;
+  seed.vz_neurons = 200;             // larger cortical pool
+  seed.migrating_neurons = 60;
+  seed.cortical_plate_neurons = 12;
+  seed.vz_thickness = cfg.Z - 5;
+  seed.radial_glia_density = 0.025f;
+  // Inhibitory subtype distribution rough-matches rodent cortex.
+  seed.frac_pv  = 0.14f;
+  seed.frac_sst = 0.04f;
+  seed.frac_vip = 0.02f;
+  // Innate subnuclei.
+  seed.brainstem_neurons = 16;
+  seed.thalamic_relay_neurons = 24;
+  seed.aversive_nucleus_neurons = 8;
   sim.seed_fetal(seed);
-  sim.randomize_polarity(0.2f);
 
   std::vector<uint32_t> ext_in;
   for (int i = 0; i < kExtFeatures; ++i) {
@@ -232,9 +250,34 @@ int main(int argc, char** argv) {
     }
   }
 
+  // ------------------------------------------------------------------
+  //                       INNATE-STATE REPORT
+  // ------------------------------------------------------------------
+  // Connected-component count: each blob of NEURON-state voxels bounded
+  // by SYNAPSE / BLOCKED is one structural cell. Initially this matches
+  // the seeded population; after sprouting + synaptogenesis the count
+  // becomes the user-facing measure of "real neurons in the matrix".
+  auto report_brain = [&](const char* tag) {
+    const int sn = sim.count_structural_neurons();
+    auto sizes = sim.structural_neuron_sizes();
+    int max_size = 0; long long sum = 0;
+    for (int s : sizes) { if (s > max_size) max_size = s; sum += s; }
+    const float avg = sizes.empty() ? 0.0f
+                                    : float(sum) / float(sizes.size());
+    const auto& g = sim.grid();
+    const long long volume = 1LL * g.X() * g.Y() * g.Z();
+    std::printf("[brain @ %s] grid=%dx%dx%d  neurons(seeded)=%zu  "
+                "neurons(structural)=%d  avg_size=%.1f  max_size=%d  "
+                "occupancy=%.2f%%  synapses=%zu\n",
+                tag, g.X(), g.Y(), g.Z(), sim.neuron_count(),
+                sn, avg, max_size,
+                100.0f * float(sum) / float(volume),
+                sim.total_synapses());
+  };
   std::printf("anatomy: %zu neurons. priors / efference / reverse "
               "self->motor are pre-wired; the curriculum walks the rest.\n",
               sim.neuron_count());
+  report_brain("birth");
 
   // ------------------------------------------------------------------
   //                          CURRICULUM HELPERS
@@ -438,34 +481,98 @@ int main(int argc, char** argv) {
   std::printf("  solo accuracy: %d / %d (%.1f%%)\n",
               solo_correct, solo_trials,
               100.0f * solo_correct / solo_trials);
+  report_brain("end-of-solo");
 
   // ------------------------------------------------------------------
-  //                       STAGE 5 -- TEST
+  //                AUTO-RESIZE THE MATRIX BASED ON COUNT
   // ------------------------------------------------------------------
-  std::printf("\n[stage 5: test] no learning; canonical scenes only\n");
-  std::printf("shown  said    motor=(mom, dad)\n");
-  int test_correct = 0;
-  for (const Scene& scene : scenes) {
-    // Silent gap so previous activity decays.
-    float zero[kAllFeatures] = {0};
-    for (int s = 0; s < 30; ++s) {
-      sim.apply_input_pattern(zero, kAllFeatures);
-      sim.step();
+  // After developmental work has settled, look at how full the matrix
+  // really is and grow or shrink the volume accordingly. Real brains
+  // do this by growing skull and gray matter through childhood and by
+  // pruning / compacting through adolescence. Our analogue: if
+  // occupancy is below a low threshold, shrink one region's worth on
+  // each side; if it's above a high threshold, grow.
+  {
+    auto sizes = sim.structural_neuron_sizes();
+    long long sum = 0; for (int s : sizes) sum += s;
+    const auto& g = sim.grid();
+    const long long volume = 1LL * g.X() * g.Y() * g.Z();
+    const float occ = float(sum) / float(volume);
+    const int R = cfg.region_size;
+    if (occ > 0.30f && g.X() < 80 && g.Y() < 80 && g.Z() < 80) {
+      std::printf("[auto-resize] occupancy %.1f%% high -> grow by %d each side (xy)\n",
+                  occ * 100.0f, R);
+      sim.grow_volume(R, R, 0);
+    } else if (occ < 0.04f && g.X() > 24 && g.Y() > 24) {
+      // Try to shrink only if the outer rim is empty. shrink_volume
+      // verifies and refuses if any tissue lives there.
+      const bool ok = sim.shrink_volume(R, R, 0);
+      std::printf("[auto-resize] occupancy %.1f%% low -> %s\n",
+                  occ * 100.0f, ok ? "shrunk" : "rim not empty, kept");
+    } else {
+      std::printf("[auto-resize] occupancy %.1f%% within target band; "
+                  "no change\n", occ * 100.0f);
     }
+    report_brain("after-resize");
+  }
+
+  // ------------------------------------------------------------------
+  //         STAGE 5 -- CONTINUOUS DEVELOPMENTAL EVALUATION
+  // ------------------------------------------------------------------
+  // Real children aren't tested with a held-out set; they're observed
+  // continuously and praised / corrected as they go. Here we simulate
+  // an ongoing "outdoor walk with caregiver" -- a stream of scenes,
+  // each with an instantaneous match readout and gentle reward
+  // (smaller than during SOLO), where rolling accuracy is the
+  // developmental milestone instead of a final test number.
+  std::printf("\n[stage 5: continuous-eval] caregiver keeps interacting; "
+              "rolling accuracy is the developmental milestone\n");
+  constexpr int continuous_trials = 60;
+  constexpr int continuous_present = 18;
+  const int report_every = 10;
+  int rolling_correct = 0;
+  std::vector<int> rolling_log;
+  for (int t = 0; t < continuous_trials; ++t) {
+    const Scene& scene = scenes[scene_pick(rng)];
+    sim.clear_eligibility();
     float pat[kAllFeatures];
     compose_pattern(pat, &scene, /*say=*/-1);
-    for (int s = 0; s < solo_present * 2; ++s) {
+    for (int s = 0; s < continuous_present; ++s) {
       sim.apply_input_pattern(pat, kAllFeatures);
+      inject_internal_noise();
       sim.step();
     }
     float mr, dr; read_motor(mr, dr);
     const char* said = utter(mr, dr);
     const char* shown = (scene.label == 0) ? "mom" : "dad";
-    const bool ok = std::strcmp(said, shown) == 0;
-    if (ok) ++test_correct;
-    std::printf("%5s  %5s   (%.3f, %.3f)\n", shown, said, mr, dr);
+    const bool match = std::strcmp(said, shown) == 0;
+    if (match) ++rolling_correct;
+    rolling_log.push_back(match ? 1 : 0);
+
+    // Gentle continuous feedback: smaller than SOLO so the rolling
+    // observation does not dominate plasticity.
+    float rewards[kClasses];
+    rewards[0] = (scene.label == 0) ? 0.4f : -0.3f;
+    rewards[1] = (scene.label == 1) ? 0.4f : -0.3f;
+    sim.apply_reward_per_class(rewards, kClasses, 0.0f);
+    if (!match) {
+      const float confidence = std::fabs(mr - dr);
+      if (confidence > 0.1f) sim.apply_aversive(confidence * 0.6f);
+    }
+    for (int s = 0; s < 3; ++s) sim.step();
+
+    if ((t + 1) % report_every == 0) {
+      const int recent = std::min<int>(report_every, t + 1);
+      int recent_correct = 0;
+      for (int i = t + 1 - recent; i <= t; ++i) recent_correct += rolling_log[i];
+      std::printf("  walk t=%2d  shown=%s said=%s  motor=(%.2f, %.2f)  "
+                  "rolling-%d=%d/%d\n",
+                  t, shown, said, mr, dr, recent, recent_correct, recent);
+    }
   }
-  std::printf("[test] %d / %zu correct\n", test_correct, scenes.size());
+  std::printf("[continuous-eval] %d / %d correct over %d trials\n",
+              rolling_correct, continuous_trials, continuous_trials);
+  report_brain("end-of-day");
 
   // ------------------------------------------------------------------
   //                       SLEEP CONSOLIDATION

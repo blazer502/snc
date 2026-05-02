@@ -236,6 +236,43 @@ struct FetalSeed {
   // Fractions in [0, 1] of the simulator's `energy_max`.
   float vz_energy_scale = 1.0f;
   float cp_energy_scale = 0.2f;
+
+  // ------------------ "DNA"-level innate priors ------------------------
+  //
+  // Real brains do not start as undifferentiated neural sheets; the
+  // fetus already contains rough functional subdivisions that genetics
+  // wires before any experience: brainstem oscillators, thalamic relay
+  // nuclei, the amygdala etc. These extra cohorts are placed alongside
+  // the cortex so the network has the analogue of innate reflex /
+  // sensory / aversive circuits the moment seed_fetal returns.
+
+  // GABAergic subtype distribution among the cortical neurons. The
+  // fractions below are taken from rodent cortex (Tremblay et al. 2016).
+  float frac_pv  = 0.14f;   // parvalbumin basket cells (perisomatic)
+  float frac_sst = 0.04f;   // somatostatin Martinotti cells (dendritic)
+  float frac_vip = 0.02f;   // vasoactive intestinal peptide (disinhibitory)
+
+  // Brainstem analogue: a small population of always-on tonic neurons
+  // placed in a narrow z-stripe near the bottom of the volume. They
+  // start each step with a positive bias so the network has spontaneous
+  // baseline drive even before any stimulus arrives -- the simulator's
+  // analogue of brainstem rhythm generators (locus coeruleus, raphe
+  // nuclei, etc.).
+  int brainstem_neurons = 12;
+
+  // Thalamic relay analogue: a population that sits between sensory
+  // INPUT neurons (after the demo wires them) and the cortex, providing
+  // an innate sensory hub. Pre-wired connections are *not* installed by
+  // seed_fetal -- the demo decides whether to use them as a relay --
+  // but the cells exist as recognisable anatomical landmarks.
+  int thalamic_relay_neurons = 16;
+
+  // Innate aversive nucleus (amygdala analogue): a small group of cells
+  // that the demo can wire to "danger" inputs so a special pattern fires
+  // them automatically. Whatever they fire onto is a candidate for the
+  // sim's apply_aversive() to be triggered against. Like the brainstem
+  // population, presence-only here; downstream wiring is up to demos.
+  int aversive_nucleus_neurons = 6;
 };
 
 class Simulator {
@@ -301,6 +338,30 @@ class Simulator {
   // This is the analogue of physical brain growth: the matrix itself gets
   // bigger over developmental time, giving room for new sprouting.
   void grow_volume(int dx_each_side, int dy_each_side, int dz_each_side);
+
+  // Shrink the simulated volume by trimming `dx_each_side` voxels from
+  // each side along x (and analogously for y, z). Returns true on
+  // success. Refuses (returns false) if any non-EMPTY voxel sits in the
+  // to-be-removed boundary -- the caller must first arrange for the
+  // outer rim to be empty (e.g. by deferring growth until tissue
+  // density warrants it). Like grow_volume, the trim must be a multiple
+  // of `region_size`.
+  bool shrink_volume(int dx_each_side, int dy_each_side, int dz_each_side);
+
+  // Count "structural neurons": connected components of NEURON-state
+  // voxels in the 2-bit grid, where SYNAPSE and BLOCKED voxels (and
+  // EMPTY) are walls. This is the user's preferred definition --
+  // a single biological neuron is whatever blob of tissue is bounded
+  // by synapses or scaffolding -- and may differ from `neuron_count()`
+  // because two seeded `Neuron` entries can share a connected blob
+  // (rarely, when sprouting bridges them without a synapse forming).
+  int count_structural_neurons() const;
+
+  // Distribution of structural-neuron sizes, in number of voxels per
+  // connected component. Useful for diagnosing whether the brain is
+  // populated by many small cells (early development) or fewer big
+  // ones (matured arborisation).
+  std::vector<int> structural_neuron_sizes() const;
 
   // Mutable access to the runtime config so callers can ramp parameters
   // (e.g. tighten pruning over development) without rebuilding the sim.
