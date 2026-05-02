@@ -398,6 +398,34 @@ void Simulator::apply_reward_per_class(const float* rewards, int n_classes,
   }
 }
 
+void Simulator::apply_aversive(float intensity) {
+  // Aversive plasticity is asymmetric: excitatory synapses that
+  // contributed to the recently-evaluated trajectory get *weakened*
+  // (don't repeat this excitation), while inhibitory synapses that
+  // contributed get *strengthened* (gate against repetition next time).
+  // Per-synapse local update -- only the synapse's own pre/post and the
+  // global aversive signal are read.
+  const float lr = cfg_.reward_lr * cfg_.aversive_amplification *
+                   cfg_.serotonin_level;
+  const int nn = static_cast<int>(neurons_.size());
+#pragma omp parallel for schedule(static)
+  for (int i = 0; i < nn; ++i) {
+    Neuron& pre = neurons_[i];
+    const bool inhibitory =
+        (pre.polarity == NeuronPolarity::INHIBITORY ||
+         pre.polarity == NeuronPolarity::INHIBITORY_SST ||
+         pre.polarity == NeuronPolarity::INHIBITORY_VIP);
+    const float sign = inhibitory ? +1.0f : -1.0f;
+    for (auto& syn : pre.outgoing) {
+      float dw = sign * lr * intensity * syn.eligibility;
+      float w = syn.weight + dw;
+      if (w > cfg_.weight_max) w = cfg_.weight_max;
+      if (w < 0.0f) w = 0.0f;
+      syn.weight = w;
+    }
+  }
+}
+
 void Simulator::clear_eligibility() {
   for (Neuron& nu : neurons_) {
     for (auto& syn : nu.outgoing) syn.eligibility = 0.0f;

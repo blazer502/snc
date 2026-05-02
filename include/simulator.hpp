@@ -161,6 +161,12 @@ struct SimConfig {
   float norepinephrine_level = 0.0f;
   float serotonin_level = 1.0f;
 
+  // Aversive-learning amplification. Real brains weight punishment more
+  // strongly than equivalent reward (negativity bias). When
+  // `apply_aversive` is called, the per-synapse weight change is
+  // `aversive_amplification * reward_lr * intensity * eligibility`.
+  float aversive_amplification = 2.0f;
+
   // Dendritic-compartment integration. A neuron with `n_branches > 1`
   // sums incoming spikes per branch in `branch_potential`. integrate
   // converts each branch's potential into a soma contribution:
@@ -345,6 +351,23 @@ class Simulator {
   // that a single scalar reward cannot escape.
   void apply_reward_per_class(const float* rewards, int n_classes,
                               float internal_reward = 0.0f);
+
+  // Aversive ("punishment" / "danger") signal. Modelled on amygdala /
+  // habenula-driven aversive learning, distinct from VTA dopamine reward.
+  // Each excitatory synapse independently weakens its weight in
+  // proportion to its eligibility trace (the pre/post pair that produced
+  // the bad outcome shouldn't repeat); each inhibitory synapse instead
+  // strengthens (gating against repetition). Net effect: the network
+  // builds an "avoid this" representation around the pattern that just
+  // caused harm.
+  //
+  // This is the simulator's analogue of "the baby touched the kettle and
+  // learned not to" -- after one strong aversive event the network's
+  // weights drift away from the trajectory that led to it. With
+  // `aversive_amplification` set above 1, aversive learning is faster
+  // than reward learning, matching the well-established negativity bias
+  // (Baumeister 2001, Kahneman & Tversky 1979).
+  void apply_aversive(float intensity);
 
   // Reset every synapse's eligibility trace to zero (between independent
   // trials in a training loop).
