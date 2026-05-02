@@ -93,15 +93,26 @@ int main(int argc, char** argv) {
   cfg.homeostatic_rate = 0.0f;
   cfg.heterosynaptic_damp = 0.0f;
   cfg.bcm_baseline_alpha = 0.0f;
-  // Multi-compartment integration on motor and amygdala. Branch 0 is
-  // the innate-prior labelled line; branch 1 absorbs whatever
-  // synaptogenesis throws at it from bulk activity. With a high
-  // threshold and zero passive gain, branch 1 noise can never trigger
-  // a soma fire on its own.
-  cfg.dendritic_threshold = 1.4f;
+  // Active dendrites with biologically-grounded temporal integration.
+  // Default cfg values cover branch 1 (the synaptogenesis-default
+  // branch); the demo then *overrides* the innate-prior branch 0 of
+  // each special neuron via set_branch_threshold / passive_gain so
+  // the labelled-line and bulk-noise compartments behave differently:
+  //
+  //   branch 0 (priors) -- threshold low (1.0), passive_gain 0.3,
+  //                         decay 0.5: a single weak prior accumulates
+  //                         over a few sustained steps and eventually
+  //                         passes the spike threshold OR drives the
+  //                         soma sub-threshold; both paths produce
+  //                         firing for safe single-feature patterns.
+  //   branch 1 (sprouted) -- threshold inf (no spike), passive_gain 0
+  //                         (no leak): bulk noise is structurally
+  //                         isolated from the soma, can never produce
+  //                         spurious firing.
+  cfg.dendritic_threshold = 1.0e9f;     // default: never spike
   cfg.dendritic_spike_amplitude = 1.0f;
-  cfg.dendritic_passive_gain = 0.0f;
-  cfg.dendritic_decay = 0.0f;
+  cfg.dendritic_passive_gain = 0.0f;    // default: no leak
+  cfg.dendritic_decay = 0.5f;            // mild temporal integration
   cfg.synaptogenesis_default_branch = 1;
 
   int trials = (argc > 1) ? std::atoi(argv[1]) : 200;
@@ -134,6 +145,14 @@ int main(int argc, char** argv) {
   sim.set_role(motor, snc::NeuronRole::OUTPUT, 0);
   sim.set_polarity(motor, snc::NeuronPolarity::EXCITATORY);
   sim.set_branches(motor, 2);
+  // Branch 0 (priors): low threshold, modest passive leak, temporal
+  // integration. Even single-feature safe patterns build up activity.
+  sim.set_branch_threshold(motor, 0, 1.0f);
+  sim.set_branch_passive_gain(motor, 0, 0.3f);
+  // Branch 1 (sprouted bulk): unreachable threshold, zero leak so
+  // background activity never reaches the soma.
+  sim.set_branch_threshold(motor, 1, 1.0e9f);
+  sim.set_branch_passive_gain(motor, 1, 0.0f);
 
   // Amygdala-analogue: GABAergic SST cell sitting between sensors and
   // the motor output. Fires whenever the danger channel is active.
@@ -142,20 +161,25 @@ int main(int argc, char** argv) {
   const uint32_t amyg = sim.add_neuron_at(16, 16, cfg.Z / 2);
   sim.set_polarity(amyg, snc::NeuronPolarity::INHIBITORY_SST);
   sim.set_branches(amyg, 2);
+  sim.set_branch_threshold(amyg, 0, 0.8f);     // pain afferent -> spike
+  sim.set_branch_passive_gain(amyg, 0, 0.0f);  // no leak from this branch
+  sim.set_branch_threshold(amyg, 1, 1.0e9f);   // bulk noise never spikes
+  sim.set_branch_passive_gain(amyg, 1, 0.0f);
 
   // Innate wiring (the "DNA" prior for this circuit):
   //   1. Safe-feature inputs prime the motor output (see ball -> reach).
-  //      Three priors each at 0.6 sum to 1.8 -- comfortably above the
-  //      dendritic-spike threshold (1.4).
+  //      Each prior has weight 0.45, well below branch 0's threshold of
+  //      1.0; sustained delivery + dendritic_decay 0.5 lets a single
+  //      prior asymptote to ~0.9 -- just below threshold so the cell
+  //      contributes via the passive path. Two priors firing summed
+  //      together comfortably crosses threshold for an NMDA-style spike.
   for (int i = 0; i < 3; ++i) {
-    sim.install_synapse(inputs[i], motor, 0.6f, 4, /*branch=*/0);
+    sim.install_synapse(inputs[i], motor, 0.45f, 4, /*branch=*/0);
   }
   //   2. Pain channel drives the amygdala, fast and strong.
-  //      Weight 1.6 individually exceeds the dendritic-spike threshold,
-  //      so even one delivery suffices to drive a dendritic spike.
-  sim.install_synapse(inputs[3], amyg, 1.6f, 1, /*branch=*/0);
+  sim.install_synapse(inputs[3], amyg, 1.0f, 1, /*branch=*/0);
   //   3. Amygdala silences the motor (inhibitory wire onto branch 0).
-  sim.install_synapse(amyg, motor, 1.5f, 1, /*branch=*/0);
+  sim.install_synapse(amyg, motor, 2.0f, 1, /*branch=*/0);
 
   std::printf("anatomy: %zu neurons (incl. 4 sensors, 1 motor, "
               "1 amygdala-SST). innate wiring locks in the reflex; "

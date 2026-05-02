@@ -165,6 +165,22 @@ struct Neuron {
   // attenuated passive contribution otherwise.
   std::vector<float> branch_potential;
 
+  // Per-branch dendritic-spike threshold. If empty or shorter than
+  // `n_branches` the global `cfg.dendritic_threshold` is used for the
+  // missing branches. Real cortical pyramidal neurons host different
+  // ion-channel densities on different dendritic compartments (apical
+  // tuft / basal / proximal) and therefore have distinct local spike
+  // thresholds; this lets a demo isolate "innate-prior" branches from
+  // "synaptogenesis-default" branches with a single setter call.
+  std::vector<float> branch_threshold;
+
+  // Per-branch passive gain (sub-threshold cable leak to the soma). If
+  // empty or shorter than `n_branches`, the global
+  // `cfg.dendritic_passive_gain` applies. Real biology: a thin distal
+  // dendrite leaks much less of a sub-threshold input than a thick
+  // proximal one -- electrotonic length matters.
+  std::vector<float> branch_passive_gain;
+
   // Sum of all incoming synapse weights, refreshed by the homeostatic
   // phase. Each pre synapse later reads this scalar and rescales its own
   // weight toward a target -- the simulator analogue of the retrograde

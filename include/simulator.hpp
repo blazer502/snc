@@ -317,6 +317,17 @@ class Simulator {
   // single-compartment behaviour).
   void set_branches(uint32_t neuron_id, uint8_t n_branches);
 
+  // Override the dendritic-spike threshold or passive-gain on a single
+  // branch of a single neuron. Useful for circuits where the
+  // hand-installed innate-prior branch must spike easily while the
+  // synaptogenesis-default branch must stay quiet under bulk noise.
+  // Pass NaN (or omit) to fall back to the global `cfg` value for
+  // that branch.
+  void set_branch_threshold(uint32_t neuron_id, uint8_t branch,
+                            float threshold);
+  void set_branch_passive_gain(uint32_t neuron_id, uint8_t branch,
+                               float gain);
+
   // Add `n` newly-born neurons inside the current ventricular-zone band
   // (tracked across grow_volume calls). When `area` is non-null the new
   // neurons are restricted to the given (x, y) box; this is how the demo

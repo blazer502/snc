@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <random>
 
 namespace snc {
@@ -510,6 +511,31 @@ void Simulator::set_branches(uint32_t neuron_id, uint8_t n_branches) {
   Neuron& nu = neurons_[neuron_id - 1];
   nu.n_branches = n_branches;
   nu.branch_potential.assign(n_branches, 0.0f);
+  // Per-branch overrides start empty -> fall through to global cfg.
+}
+
+void Simulator::set_branch_threshold(uint32_t neuron_id, uint8_t branch,
+                                      float threshold) {
+  if (neuron_id == 0 || neuron_id > neurons_.size()) return;
+  Neuron& nu = neurons_[neuron_id - 1];
+  if (branch >= nu.n_branches) return;
+  if (nu.branch_threshold.size() < nu.n_branches) {
+    nu.branch_threshold.resize(nu.n_branches,
+                               std::numeric_limits<float>::quiet_NaN());
+  }
+  nu.branch_threshold[branch] = threshold;
+}
+
+void Simulator::set_branch_passive_gain(uint32_t neuron_id, uint8_t branch,
+                                         float gain) {
+  if (neuron_id == 0 || neuron_id > neurons_.size()) return;
+  Neuron& nu = neurons_[neuron_id - 1];
+  if (branch >= nu.n_branches) return;
+  if (nu.branch_passive_gain.size() < nu.n_branches) {
+    nu.branch_passive_gain.resize(nu.n_branches,
+                                  std::numeric_limits<float>::quiet_NaN());
+  }
+  nu.branch_passive_gain[branch] = gain;
 }
 
 uint32_t Simulator::add_neuron_at(int x, int y, int z) {
@@ -671,11 +697,22 @@ void Simulator::integrate_incoming_phase() {
     }
     for (uint8_t b = 0; b < nu.n_branches; ++b) {
       float& bp = nu.branch_potential[b];
-      if (bp >= threshold) {
+      // Per-branch overrides fall back to global cfg if not set or NaN.
+      const float br_threshold =
+          (b < nu.branch_threshold.size() &&
+           !std::isnan(nu.branch_threshold[b]))
+              ? nu.branch_threshold[b]
+              : threshold;
+      const float br_passive =
+          (b < nu.branch_passive_gain.size() &&
+           !std::isnan(nu.branch_passive_gain[b]))
+              ? nu.branch_passive_gain[b]
+              : passive;
+      if (bp >= br_threshold) {
         nu.input_acc += spike_amp;
         bp = 0.0f;
       } else {
-        nu.input_acc += bp * passive;
+        nu.input_acc += bp * br_passive;
         bp *= ddecay;
       }
     }
