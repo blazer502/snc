@@ -149,10 +149,18 @@ int main(int argc, char** argv) {
   if (csv) {
     std::fprintf(csv,
                  "step,sprouts,synapses_formed,synapses_pruned,spikes,"
-                 "total_neurons,total_synapses,"
+                 "total_neurons,total_synapses,structural_neurons,"
+                 "max_blob_size,occupancy,grid_x,grid_y,grid_z,"
                  "motor_n,motor_s,sensory_n,sensory_s,"
                  "associate_n,associate_s,language_n,language_s\n");
   }
+  // Sample the structural-neuron count every `structural_sample_every`
+  // steps. Flood-fill is O(volume); too frequent and it dominates the
+  // step time. 25 steps is a good middle-ground for plotting purposes.
+  constexpr int kStructuralSampleEvery = 25;
+  int last_structural_count = 0;
+  int last_max_blob = 0;
+  float last_occupancy = 0.0f;
 
   std::printf("\nstep  motor(n/s)  sensory(n/s)  associate(n/s)  language(n/s)"
               "  formed/pruned\n");
@@ -182,15 +190,34 @@ int main(int argc, char** argv) {
 
     sim.step();
 
+    // Periodically sample the (expensive) structural-neuron flood-fill
+    // count and reuse the last sample for the in-between rows.
+    if (s % kStructuralSampleEvery == 0 || s == total_steps - 1) {
+      auto sizes = sim.structural_neuron_sizes();
+      last_structural_count = static_cast<int>(sizes.size());
+      last_max_blob = 0;
+      long long sum = 0;
+      for (int v : sizes) {
+        if (v > last_max_blob) last_max_blob = v;
+        sum += v;
+      }
+      const auto& g = sim.grid();
+      const long long volume = 1LL * g.X() * g.Y() * g.Z();
+      last_occupancy = volume > 0 ? float(sum) / float(volume) : 0.0f;
+    }
+
     const auto& st = sim.last_stats();
     if (csv && (mode == "schedule")) {
       const auto m = compute_area_metrics(sim);
+      const auto& g = sim.grid();
       std::fprintf(csv,
-                   "%d,%d,%d,%d,%d,%zu,%zu,"
+                   "%d,%d,%d,%d,%d,%zu,%zu,%d,%d,%.4f,%d,%d,%d,"
                    "%d,%d,%d,%d,%d,%d,%d,%d\n",
                    s, st.sprouts, st.synapses_formed, st.synapses_pruned,
                    st.spikes,
                    sim.neuron_count(), sim.total_synapses(),
+                   last_structural_count, last_max_blob, last_occupancy,
+                   g.X(), g.Y(), g.Z(),
                    m[0].neurons, m[0].synapses,
                    m[1].neurons, m[1].synapses,
                    m[2].neurons, m[2].synapses,

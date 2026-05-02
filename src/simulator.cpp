@@ -609,6 +609,13 @@ void Simulator::apply_aversive(float intensity) {
   // contributed get *strengthened* (gate against repetition next time).
   // Per-synapse local update -- only the synapse's own pre/post and the
   // global aversive signal are read.
+  //
+  // Critically, the signal is restricted to synapses whose *post* is
+  // an OUTPUT neuron. Real aversive learning preferentially reshapes
+  // the action selection step (motor / decision pathways), leaving
+  // sensory and detection pathways intact. Without this filter the
+  // very synapse that *detected* the danger (e.g. pain-receptor ->
+  // amygdala) would be weakened by its own success report.
   const float lr = cfg_.reward_lr * cfg_.aversive_amplification *
                    cfg_.serotonin_level;
   const int nn = static_cast<int>(neurons_.size());
@@ -621,6 +628,10 @@ void Simulator::apply_aversive(float intensity) {
          pre.polarity == NeuronPolarity::INHIBITORY_VIP);
     const float sign = inhibitory ? +1.0f : -1.0f;
     for (auto& syn : pre.outgoing) {
+      if (syn.target_neuron == 0 || syn.target_neuron > neurons_.size())
+        continue;
+      const Neuron& post = neurons_[syn.target_neuron - 1];
+      if (post.role != NeuronRole::OUTPUT) continue;
       float dw = sign * lr * intensity * syn.eligibility;
       float w = syn.weight + dw;
       if (w > cfg_.weight_max) w = cfg_.weight_max;
