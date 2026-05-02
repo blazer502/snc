@@ -369,6 +369,12 @@ int main(int argc, char** argv) {
 
   // -------- Sleep ------------------------------------------------------
 
+  // Sleep replay before saving: drives the connectome with internal noise
+  // for a short window with elevated STDP, consolidating the patterns
+  // that wakeful learning has built up. Mirrors slow-wave / REM replay.
+  std::printf("\n[sleep] consolidating via replay (200 steps)\n");
+  sim.sleep_consolidate(200, 1.5f);
+
   if (sim.save_state(save_path)) {
     std::printf("\n[sleep] saved brain state to %s\n", save_path);
   } else {

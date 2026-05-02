@@ -40,6 +40,14 @@ struct SynapseEdge {
   // dopamine-modulated STDP in real cortex.
   float eligibility = 0.0f;
 
+  // Long-timescale consolidation tag (synaptic-tagging-and-capture, Frey &
+  // Morris 1997). When STDP drives a synapse's weight above a threshold a
+  // tag is set; the tag decays slowly. Tagged synapses are protected from
+  // spine retraction during the next pruning sweep -- their molecular
+  // machinery has captured PRPs (plasticity-related proteins) and is
+  // structurally stabilised even if activity drops.
+  float consolidation_tag = 0.0f;
+
   // Conduction delay in simulation steps -- equal to the Manhattan distance
   // from the pre-synaptic soma to the synaptic voxel at formation time.
   // Captures the fact that an action potential needs time to propagate
@@ -116,6 +124,22 @@ struct Neuron {
   // BDNF / TNF-alpha signal that real cortical neurons release to balance
   // their total drive (synaptic scaling, Turrigiano 2008).
   float incoming_weight_sum = 0.0f;
+
+  // Long-timescale activity baseline used as the BCM sliding threshold
+  // (Bienenstock-Cooper-Munro 1982). LTP only happens when the post
+  // fires *above* its own recent average; below that threshold a
+  // potentiation event flips sign and becomes LTD. This stabilises the
+  // network against runaway potentiation: a chronically over-active
+  // neuron raises its own threshold and stops accreting new excitation.
+  float activity_baseline = 0.05f;
+
+  // Sum of LTP magnitude received by this neuron's incoming synapses on
+  // the current step. Heterosynaptic plasticity then damps every other
+  // incoming synapse on the same post in proportion to this -- the
+  // post-synaptic density has only so much room for AMPA receptors, and
+  // strengthening one synapse forces a cost on its neighbours
+  // (heterosynaptic LTD; Royer & Pare 2003).
+  float ltp_received_this_step = 0.0f;
 };
 
 }  // namespace snc

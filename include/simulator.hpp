@@ -121,6 +121,46 @@ struct SimConfig {
   // the actin cytoskeleton no longer being able to maintain the spine.
   float spine_retraction_floor = 0.02f;
 
+  // BCM metaplasticity (Bienenstock-Cooper-Munro). The post's running
+  // baseline activity acts as a sliding threshold for LTP. Above the
+  // threshold LTP magnitude shrinks; below it normal LTP applies. The
+  // threshold itself moves with a slow EMA of `fire_rate_ema`.
+  float bcm_baseline_alpha = 0.0005f;     // very slow EMA
+  float bcm_target = 0.08f;               // (unused -- baseline is per-neuron)
+
+  // Heterosynaptic damping. After STDP each post neuron measures the
+  // total LTP magnitude it received and shrinks every one of its
+  // incoming synapses by a small fraction of that, mimicking the
+  // post-synaptic-density resource competition.
+  float heterosynaptic_damp = 0.003f;
+
+  // Sensitive period: a developmental window early in the simulation
+  // during which STDP amplitude is boosted, then exponentially decays
+  // to baseline. Captures critical-period plasticity (e.g. the language
+  // acquisition window in primary auditory cortex).
+  int   sensitive_period_tau = 6000;      // exponential decay constant in steps
+  float sensitive_period_boost = 1.3f;    // peak multiplier on STDP at step 0
+
+  // Synaptic-tagging-and-capture. LTP events above `tag_threshold` set a
+  // long-timescale consolidation tag; tags decay slowly and protect the
+  // synapse's contact site from spine retraction.
+  float tag_decay = 0.9985f;
+  float tag_threshold = 0.01f;             // LTP delta required to set a tag
+  float tag_protection = 0.3f;             // tag value above which spines are protected
+
+  // Neuromodulator pool. Three additional global scalars beyond dopamine
+  // (which is the per-class reward broadcast):
+  //   acetylcholine -> multiplies STDP gain (attention / learning rate)
+  //   norepinephrine -> shifts BCM threshold (novelty / arousal)
+  //   serotonin -> multiplies reward consolidation rate (mood / valence)
+  // Implemented as plain config scalars so the demo can crank attention
+  // up at the start of a trial, etc., without breaking any locality
+  // property -- each neuron / synapse just reads the global as if it were
+  // a diffuse molecule bathing the cortex.
+  float acetylcholine_level = 1.0f;
+  float norepinephrine_level = 0.0f;
+  float serotonin_level = 1.0f;
+
   unsigned seed = 1234u;
 };
 
@@ -293,6 +333,14 @@ class Simulator {
   bool save_state(const char* path) const;
   bool load_state(const char* path);
 
+  // Sleep replay / consolidation. Drives the network with internal noise
+  // only (no external input), with `boost` multiplied STDP amplitude, for
+  // `n_steps` steps. Replays the patterns currently encoded in the
+  // connectome, strengthening their most-fired co-activations -- the
+  // behavioural correlate of slow-wave / REM sleep replay observed in
+  // hippocampus and cortex.
+  void sleep_consolidate(int n_steps, float boost = 1.6f);
+
   // Run one full simulation step.
   void step();
 
@@ -330,6 +378,7 @@ class Simulator {
   void integrate_incoming_phase();
   void chemistry_phase();
   void stdp_phase();
+  void heterosynaptic_phase();
   void fire_dispatch_phase();
   void scheduler_dispatch_phase();
   void homeostatic_phase();
@@ -337,6 +386,10 @@ class Simulator {
   void synaptogenesis_phase();
   void pruning_phase();
   void energy_regen_phase();
+
+  // Multiplier applied to STDP amplitudes from the sensitive-period
+  // window: high near step 0, exponentially decays to 1.0.
+  float developmental_factor() const noexcept;
 
   bool try_set_neuron(int x, int y, int z, uint32_t owner_id);
 

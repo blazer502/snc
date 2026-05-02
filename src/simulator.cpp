@@ -345,8 +345,8 @@ void Simulator::apply_reward(float reward) {
   // Each synapse independently turns its own eligibility trace into a
   // weight change. No information beyond `weight`, `eligibility` and the
   // global scalar `reward` is consulted -- so the local-update property
-  // is preserved.
-  const float lr = cfg_.reward_lr;
+  // is preserved. Serotonin scales the consolidation rate.
+  const float lr = cfg_.reward_lr * cfg_.serotonin_level;
   const int nn = static_cast<int>(neurons_.size());
 #pragma omp parallel for schedule(static)
   for (int i = 0; i < nn; ++i) {
@@ -361,7 +361,7 @@ void Simulator::apply_reward(float reward) {
 
 void Simulator::apply_reward_per_class(const float* rewards, int n_classes,
                                         float internal_reward) {
-  const float lr = cfg_.reward_lr;
+  const float lr = cfg_.reward_lr * cfg_.serotonin_level;
   const int nn = static_cast<int>(neurons_.size());
 #pragma omp parallel for schedule(static)
   for (int i = 0; i < nn; ++i) {
@@ -430,11 +430,30 @@ void Simulator::chemistry_phase() {
     nu.fire_rate_ema =
         nu.fire_rate_ema * (1.0f - cfg_.fire_rate_alpha) +
         (nu.fired_this_step ? 1.0f : 0.0f) * cfg_.fire_rate_alpha;
+
+    // BCM sliding threshold: a much slower EMA than fire_rate_ema. This
+    // tracks the neuron's long-term activity level and serves as the
+    // post-synaptic potentiation threshold during stdp_phase.
+    nu.activity_baseline =
+        nu.activity_baseline * (1.0f - cfg_.bcm_baseline_alpha) +
+        nu.fire_rate_ema * cfg_.bcm_baseline_alpha;
+
+    // Reset the per-step LTP accumulator that heterosynaptic_phase will
+    // read.
+    nu.ltp_received_this_step = 0.0f;
   }
   // Spike count for this step (post-parallel reduction).
   int spikes = 0;
   for (const Neuron& nu : neurons_) if (nu.fired_this_step) ++spikes;
   last_stats_.spikes = spikes;
+}
+
+float Simulator::developmental_factor() const noexcept {
+  if (cfg_.sensitive_period_tau <= 0) return 1.0f;
+  const float age = static_cast<float>(step_) /
+                    static_cast<float>(cfg_.sensitive_period_tau);
+  // Boost decays from `sensitive_period_boost` at step 0 to 1.0 at infty.
+  return 1.0f + (cfg_.sensitive_period_boost - 1.0f) * std::exp(-age);
 }
 
 void Simulator::stdp_phase() {
@@ -460,30 +479,89 @@ void Simulator::stdp_phase() {
   // LTP is what tags a synapse as eligible for late dopamine consolidation.
   const int W = cfg_.stdp_window;
   const float tau = cfg_.stdp_tau;
-  const float a_ltp = cfg_.stdp_a_ltp;
+  const float dev = developmental_factor();
+  const float ach = cfg_.acetylcholine_level;
+  const float nor = cfg_.norepinephrine_level;
+  const float a_ltp = cfg_.stdp_a_ltp * dev * ach;
   const int nn = static_cast<int>(neurons_.size());
-#pragma omp parallel for schedule(static)
+  // We can no longer parallelise this loop over pre because we now write
+  // post.ltp_received_this_step (heterosynaptic damping). To keep the
+  // per-synapse update local while remaining correct without atomics, we
+  // switch to a serial sweep here. STDP cost is small relative to the
+  // queue dispatch passes.
   for (int i = 0; i < nn; ++i) {
     Neuron& pre = neurons_[i];
     for (auto& syn : pre.outgoing) {
-      // Continuous decay of the eligibility trace happens every step
-      // regardless of events (matches molecular trace decay).
+      // Continuous decay of the eligibility trace and the consolidation
+      // tag happens every step regardless of events.
       syn.eligibility *= cfg_.eligibility_decay;
+      syn.consolidation_tag *= cfg_.tag_decay;
 
       if (syn.target_neuron == 0 || syn.target_neuron > neurons_.size())
         continue;
-      const Neuron& post = neurons_[syn.target_neuron - 1];
+      Neuron& post = neurons_[syn.target_neuron - 1];
       if (!post.fired_this_step) continue;
       const int dt = step_ - syn.last_delivery_step;
       if (dt <= 0 || dt > W) continue;
 
       const float kernel = std::exp(-static_cast<float>(dt) / tau);
-      syn.weight += a_ltp * kernel;
+
+      // BCM modulation of LTP amplitude: when the post is firing well
+      // above its own baseline, LTP shrinks toward zero; below baseline
+      // it stays near the unmodulated rate. The modulation is a smooth
+      // multiplier so we never accidentally invert the sign of an LTP
+      // event on a low-firing neuron. Norepinephrine effectively raises
+      // the apparent baseline (denominator) -> easier LTP under arousal.
+      const float bcm_threshold =
+          std::max(0.005f, post.activity_baseline + nor * 0.04f);
+      const float bcm_factor =
+          std::max(0.05f,
+                   std::min(1.5f,
+                            1.0f - 0.5f * post.fire_rate_ema / bcm_threshold));
+      const float dw = a_ltp * kernel * bcm_factor;
+
+      syn.weight += dw;
       if (syn.weight > cfg_.weight_max) syn.weight = cfg_.weight_max;
+      if (syn.weight < 0.0f) syn.weight = 0.0f;
+
+      // Accumulate post-side LTP for heterosynaptic damping.
+      if (dw > 0.0f) post.ltp_received_this_step += dw;
+
+      // Synaptic tag: large LTP events tag the synapse for long-term
+      // consolidation. The tag protects the spine from retraction.
+      if (dw > cfg_.tag_threshold) {
+        syn.consolidation_tag = std::min(
+            1.0f, syn.consolidation_tag + dw * 4.0f);
+      }
 
       ++syn.caused_fire_count;
       syn.eligibility +=
           cfg_.eligibility_potentiation * kernel * (1.0f + post.fire_rate_ema);
+    }
+  }
+}
+
+void Simulator::heterosynaptic_phase() {
+  // For every synapse, shrink the weight by a fraction of the post's
+  // total received LTP this step (excluding this synapse's own
+  // contribution). Because post-synaptic density resources are limited,
+  // strong potentiation at one site costs every other incoming synapse.
+  const float damp = cfg_.heterosynaptic_damp;
+  if (damp <= 0.0f) return;
+  const int nn = static_cast<int>(neurons_.size());
+#pragma omp parallel for schedule(static)
+  for (int i = 0; i < nn; ++i) {
+    for (auto& syn : neurons_[i].outgoing) {
+      if (syn.target_neuron == 0 || syn.target_neuron > neurons_.size())
+        continue;
+      const Neuron& post = neurons_[syn.target_neuron - 1];
+      const float total = post.ltp_received_this_step;
+      if (total <= 0.0f) continue;
+      // Each synapse pays a fixed share of the total LTP. Strong synapses
+      // can absorb the cost; weak synapses get pushed lower and may
+      // eventually hit the spine retraction floor.
+      syn.weight -= damp * total / std::max(1.0f, post.incoming_weight_sum);
+      if (syn.weight < 0.0f) syn.weight = 0.0f;
     }
   }
 }
@@ -619,6 +697,11 @@ void Simulator::pruning_phase() {
               const bool ancient = (step_ - syn.last_active_step) >
                                    cfg_.prune_inactive_steps;
               if (!retracted && !ancient) return false;
+              // Tag-and-capture protection: a synapse with a strong
+              // consolidation tag has captured plasticity-related
+              // proteins and is structurally stabilised. It survives a
+              // weight dip that would otherwise retract its spine.
+              if (syn.consolidation_tag >= cfg_.tag_protection) return false;
               if (grid_.in_bounds(syn.pos.x, syn.pos.y, syn.pos.z) &&
                   grid_.get(syn.pos.x, syn.pos.y, syn.pos.z) ==
                       BrainGrid::SYNAPSE) {
@@ -800,6 +883,7 @@ void Simulator::step() {
   integrate_incoming_phase();
   chemistry_phase();
   stdp_phase();
+  heterosynaptic_phase();
   fire_dispatch_phase();
   scheduler_dispatch_phase();
   homeostatic_phase();
@@ -832,6 +916,37 @@ float Simulator::total_energy() const noexcept {
     }
   }
   return total;
+}
+
+void Simulator::sleep_consolidate(int n_steps, float boost) {
+  // Replay-style consolidation. We temporarily boost STDP amplitudes,
+  // disable external drive (the network only sees its own internal
+  // noise + the activity it was already carrying), and run for n_steps.
+  // Co-firing patterns that had been built up during the awake training
+  // are reinforced; tagged synapses capture additional weight,
+  // consolidating recent learning. Models the slow-wave / REM replay
+  // observed in hippocampus and cortex.
+  const float saved_a_ltp = cfg_.stdp_a_ltp;
+  const float saved_a_ltd = cfg_.stdp_a_ltd;
+  const float saved_ach = cfg_.acetylcholine_level;
+  cfg_.stdp_a_ltp *= boost;
+  cfg_.stdp_a_ltd *= 0.7f;          // slightly less LTD during replay
+  cfg_.acetylcholine_level *= 0.5f; // less attention-driven plasticity
+
+  std::uniform_real_distribution<float> small_noise(0.0f, 0.05f);
+  for (int s = 0; s < n_steps; ++s) {
+    // Tiny baseline noise on every neuron so spontaneous activity has
+    // somewhere to start; the structural connectome and chemistry then
+    // do the rest.
+    for (Neuron& nu : neurons_) {
+      nu.input_acc += small_noise(rng_);
+    }
+    step();
+  }
+
+  cfg_.stdp_a_ltp = saved_a_ltp;
+  cfg_.stdp_a_ltd = saved_a_ltd;
+  cfg_.acetylcholine_level = saved_ach;
 }
 
 // ---- Sleep: persistence layer --------------------------------------------
@@ -891,9 +1006,9 @@ void rvec(std::ifstream& f, std::vector<T>& v) {
 bool Simulator::save_state(const char* path) const {
   std::ofstream f(path, std::ios::binary);
   if (!f) return false;
-  const char magic[4] = {'S', 'N', 'C', '2'};
+  const char magic[4] = {'S', 'N', 'C', '3'};
   f.write(magic, 4);
-  uint32_t version = 2;
+  uint32_t version = 3;
   wpod(f, version);
   wpod(f, cfg_);
   wpod(f, step_);
@@ -919,6 +1034,7 @@ bool Simulator::save_state(const char* path) const {
     uint8_t fired = nu.fired_this_step ? 1 : 0;
     wpod(f, fired);
     wpod(f, nu.incoming_weight_sum);
+    wpod(f, nu.activity_baseline);
     wvec(f, nu.body);
     wvec(f, nu.incoming_queue);
 
@@ -930,6 +1046,7 @@ bool Simulator::save_state(const char* path) const {
       wpod(f, syn.weight);
       wpod(f, syn.last_active_step);
       wpod(f, syn.eligibility);
+      wpod(f, syn.consolidation_tag);
       wpod(f, syn.conduction_delay);
       wpod(f, syn.delivered_count);
       wpod(f, syn.caused_fire_count);
@@ -945,10 +1062,10 @@ bool Simulator::load_state(const char* path) {
   if (!f) return false;
   char magic[4];
   f.read(magic, 4);
-  if (std::memcmp(magic, "SNC2", 4) != 0) return false;
+  if (std::memcmp(magic, "SNC3", 4) != 0) return false;
   uint32_t version;
   rpod(f, version);
-  if (version != 2) return false;
+  if (version != 3) return false;
 
   rpod(f, cfg_);
   rpod(f, step_);
@@ -982,6 +1099,7 @@ bool Simulator::load_state(const char* path) {
     rpod(f, fired);
     nu.fired_this_step = fired != 0;
     rpod(f, nu.incoming_weight_sum);
+    rpod(f, nu.activity_baseline);
     rvec(f, nu.body);
     rvec(f, nu.incoming_queue);
 
@@ -994,6 +1112,7 @@ bool Simulator::load_state(const char* path) {
       rpod(f, syn.weight);
       rpod(f, syn.last_active_step);
       rpod(f, syn.eligibility);
+      rpod(f, syn.consolidation_tag);
       rpod(f, syn.conduction_delay);
       rpod(f, syn.delivered_count);
       rpod(f, syn.caused_fire_count);
