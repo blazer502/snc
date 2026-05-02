@@ -278,10 +278,12 @@ void Simulator::randomize_polarity(float inhibitory_fraction) {
 }
 
 void Simulator::install_synapse(uint32_t pre_id, uint32_t post_id,
-                                 float weight, int conduction_delay) {
+                                 float weight, int conduction_delay,
+                                 uint8_t branch) {
   if (pre_id == 0 || pre_id > neurons_.size()) return;
   if (post_id == 0 || post_id > neurons_.size()) return;
   Neuron& pre = neurons_[pre_id - 1];
+  Neuron& post = neurons_[post_id - 1];
   SynapseEdge edge;
   edge.target_neuron = post_id;
   edge.pos = pre.soma;  // unused for non-grid synapses
@@ -289,7 +291,21 @@ void Simulator::install_synapse(uint32_t pre_id, uint32_t post_id,
   edge.last_active_step = step_;
   edge.last_delivery_step = step_ - 10000;
   edge.conduction_delay = std::max(1, conduction_delay);
+  // Clamp branch to the post's dendrite count so an over-eager caller
+  // can't write past the branch_potential vector.
+  edge.branch = (post.n_branches > 0)
+                    ? static_cast<uint8_t>(std::min<uint32_t>(
+                          branch, post.n_branches - 1))
+                    : 0;
   pre.outgoing.push_back(edge);
+}
+
+void Simulator::set_branches(uint32_t neuron_id, uint8_t n_branches) {
+  if (neuron_id == 0 || neuron_id > neurons_.size()) return;
+  if (n_branches == 0) n_branches = 1;
+  Neuron& nu = neurons_[neuron_id - 1];
+  nu.n_branches = n_branches;
+  nu.branch_potential.assign(n_branches, 0.0f);
 }
 
 uint32_t Simulator::add_neuron_at(int x, int y, int z) {
@@ -389,18 +405,45 @@ void Simulator::clear_eligibility() {
 }
 
 void Simulator::integrate_incoming_phase() {
-  // Stage 1->2 boundary: every spike that the scheduler delivered into
-  // a neuron's `incoming_queue` last cycle is summed into `input_acc`,
-  // joining any direct external injection. The queue is then cleared.
-  // Strictly per-neuron and embarrassingly parallel.
+  // Stage 1->2 boundary: synaptic inputs that scheduler_dispatch_phase
+  // accumulated into per-branch dendritic potentials get folded into the
+  // soma's input_acc. Each branch independently checks for an NMDA-style
+  // dendritic spike (a strong, stereotyped soma drive) or contributes a
+  // passively-attenuated portion of its sub-threshold sum.
+  //
+  // For backward compatibility the default config sets dendritic_decay=0,
+  // dendritic_passive_gain=1, dendritic_threshold=inf, which makes a
+  // single-branch neuron behaviourally identical to the legacy "all
+  // synaptic input goes straight into input_acc" model.
   const int nn = static_cast<int>(neurons_.size());
+  const float threshold = cfg_.dendritic_threshold;
+  const float spike_amp = cfg_.dendritic_spike_amplitude;
+  const float passive = cfg_.dendritic_passive_gain;
+  const float ddecay = cfg_.dendritic_decay;
 #pragma omp parallel for schedule(static)
   for (int i = 0; i < nn; ++i) {
     Neuron& nu = neurons_[i];
-    float sum = 0.0f;
-    for (float v : nu.incoming_queue) sum += v;
-    nu.input_acc += sum;
-    nu.incoming_queue.clear();
+    if (nu.branch_potential.size() != nu.n_branches) {
+      nu.branch_potential.assign(nu.n_branches, 0.0f);
+    }
+    for (uint8_t b = 0; b < nu.n_branches; ++b) {
+      float& bp = nu.branch_potential[b];
+      if (bp >= threshold) {
+        nu.input_acc += spike_amp;
+        bp = 0.0f;
+      } else {
+        nu.input_acc += bp * passive;
+        bp *= ddecay;
+      }
+    }
+    // Drain the legacy queue too (some demos / external paths may still
+    // use inject_input which may queue here in older builds).
+    if (!nu.incoming_queue.empty()) {
+      float sum = 0.0f;
+      for (float v : nu.incoming_queue) sum += v;
+      nu.input_acc += sum;
+      nu.incoming_queue.clear();
+    }
   }
 }
 
@@ -613,8 +656,15 @@ void Simulator::fire_dispatch_phase() {
     if (!nu.fired_this_step) continue;
     const float soma_e = energy_.energy_at(nu.soma.x, nu.soma.y, nu.soma.z);
     const bool starved = soma_e < cfg_.forward_min_energy;
-    const float sign =
-        (nu.polarity == NeuronPolarity::INHIBITORY) ? -1.0f : 1.0f;
+    // All three inhibitory subtypes (PV, SST, VIP) flip the spike sign
+    // -- they all release GABA. The downstream effect differs by where
+    // their synapses land (PV soma, SST dendrite branches, VIP usually
+    // onto SST), but the polarity flip itself is uniform.
+    const bool inhibitory =
+        (nu.polarity == NeuronPolarity::INHIBITORY ||
+         nu.polarity == NeuronPolarity::INHIBITORY_SST ||
+         nu.polarity == NeuronPolarity::INHIBITORY_VIP);
+    const float sign = inhibitory ? -1.0f : 1.0f;
     for (auto& syn : nu.outgoing) {
       if (starved && syn.weight < cfg_.forward_low_energy_floor) continue;
       SpikePacket pk;
@@ -646,7 +696,16 @@ void Simulator::scheduler_dispatch_phase() {
         }
         if (syn.target_neuron > 0 && syn.target_neuron <= neurons_.size()) {
           Neuron& post = neurons_[syn.target_neuron - 1];
-          post.incoming_queue.push_back(read->magnitude);
+          // Deliver to the right dendritic branch -- multi-compartment
+          // neurons see this synapse contribute only to its own dendrite.
+          // Default n_branches = 1 → branch must be 0, so this is the
+          // single integrator the legacy code already exercised.
+          if (post.branch_potential.size() != post.n_branches) {
+            post.branch_potential.assign(post.n_branches, 0.0f);
+          }
+          uint8_t b = syn.branch;
+          if (b >= post.n_branches) b = 0;
+          post.branch_potential[b] += read->magnitude;
 
           // LTD half of STDP: if the post fired *before* this delivery
           // arrived, the spike is too late to be causal. The same NMDA /
@@ -859,6 +918,16 @@ void Simulator::synaptogenesis_phase() {
             std::abs(static_cast<int>(pre.soma.x) - nx) +
                 std::abs(static_cast<int>(pre.soma.y) - ny) +
                 std::abs(static_cast<int>(pre.soma.z) - nz));
+        // New synapses land on the configured default branch. For
+        // multi-compartment posts, demos can flip
+        // `synaptogenesis_default_branch` so sprouted plasticity targets
+        // a different dendrite from hand-installed priors.
+        Neuron& post_n = neurons_[other - 1];
+        edge.branch = (post_n.n_branches > 0)
+                          ? static_cast<uint8_t>(std::min<uint32_t>(
+                                cfg_.synaptogenesis_default_branch,
+                                post_n.n_branches - 1))
+                          : 0;
         pre.outgoing.push_back(edge);
         ++last_stats_.synapses_formed;
       }
@@ -949,6 +1018,45 @@ void Simulator::sleep_consolidate(int n_steps, float boost) {
   cfg_.acetylcholine_level = saved_ach;
 }
 
+void Simulator::sleep_replay_patterns(
+    int n_steps, const std::vector<std::vector<float>>& patterns,
+    int n_features, float boost) {
+  // Pattern-replay variant of sleep consolidation. Each step the network
+  // is driven with a pattern drawn at random from the supplied set --
+  // rehearsing experiences that the demo just lived through. STDP is
+  // boosted as in plain consolidate. No reward is broadcast; the
+  // already-tagged synapses use the replay activity to capture more
+  // weight via standard STDP and tag-and-capture rules.
+  if (patterns.empty() || n_features <= 0) {
+    sleep_consolidate(n_steps, boost);
+    return;
+  }
+  const float saved_a_ltp = cfg_.stdp_a_ltp;
+  const float saved_a_ltd = cfg_.stdp_a_ltd;
+  const float saved_ach = cfg_.acetylcholine_level;
+  cfg_.stdp_a_ltp *= boost;
+  cfg_.stdp_a_ltd *= 0.7f;
+  cfg_.acetylcholine_level *= 0.5f;
+
+  std::uniform_int_distribution<int> pick(
+      0, static_cast<int>(patterns.size()) - 1);
+  std::uniform_real_distribution<float> small_noise(0.0f, 0.04f);
+
+  for (int s = 0; s < n_steps; ++s) {
+    const auto& pat = patterns[pick(rng_)];
+    apply_input_pattern(pat.data(),
+                        std::min<int>(n_features, static_cast<int>(pat.size())));
+    for (Neuron& nu : neurons_) {
+      nu.input_acc += small_noise(rng_);
+    }
+    step();
+  }
+
+  cfg_.stdp_a_ltp = saved_a_ltp;
+  cfg_.stdp_a_ltd = saved_a_ltd;
+  cfg_.acetylcholine_level = saved_ach;
+}
+
 // ---- Sleep: persistence layer --------------------------------------------
 //
 // Binary file layout (little-endian, host-aligned):
@@ -1006,9 +1114,9 @@ void rvec(std::ifstream& f, std::vector<T>& v) {
 bool Simulator::save_state(const char* path) const {
   std::ofstream f(path, std::ios::binary);
   if (!f) return false;
-  const char magic[4] = {'S', 'N', 'C', '3'};
+  const char magic[4] = {'S', 'N', 'C', '4'};
   f.write(magic, 4);
-  uint32_t version = 3;
+  uint32_t version = 4;
   wpod(f, version);
   wpod(f, cfg_);
   wpod(f, step_);
@@ -1035,6 +1143,8 @@ bool Simulator::save_state(const char* path) const {
     wpod(f, fired);
     wpod(f, nu.incoming_weight_sum);
     wpod(f, nu.activity_baseline);
+    wpod(f, nu.n_branches);
+    wvec(f, nu.branch_potential);
     wvec(f, nu.body);
     wvec(f, nu.incoming_queue);
 
@@ -1048,6 +1158,7 @@ bool Simulator::save_state(const char* path) const {
       wpod(f, syn.eligibility);
       wpod(f, syn.consolidation_tag);
       wpod(f, syn.conduction_delay);
+      wpod(f, syn.branch);
       wpod(f, syn.delivered_count);
       wpod(f, syn.caused_fire_count);
       wpod(f, syn.last_delivery_step);
@@ -1062,10 +1173,10 @@ bool Simulator::load_state(const char* path) {
   if (!f) return false;
   char magic[4];
   f.read(magic, 4);
-  if (std::memcmp(magic, "SNC3", 4) != 0) return false;
+  if (std::memcmp(magic, "SNC4", 4) != 0) return false;
   uint32_t version;
   rpod(f, version);
-  if (version != 3) return false;
+  if (version != 4) return false;
 
   rpod(f, cfg_);
   rpod(f, step_);
@@ -1100,6 +1211,8 @@ bool Simulator::load_state(const char* path) {
     nu.fired_this_step = fired != 0;
     rpod(f, nu.incoming_weight_sum);
     rpod(f, nu.activity_baseline);
+    rpod(f, nu.n_branches);
+    rvec(f, nu.branch_potential);
     rvec(f, nu.body);
     rvec(f, nu.incoming_queue);
 
@@ -1114,6 +1227,7 @@ bool Simulator::load_state(const char* path) {
       rpod(f, syn.eligibility);
       rpod(f, syn.consolidation_tag);
       rpod(f, syn.conduction_delay);
+      rpod(f, syn.branch);
       rpod(f, syn.delivered_count);
       rpod(f, syn.caused_fire_count);
       rpod(f, syn.last_delivery_step);

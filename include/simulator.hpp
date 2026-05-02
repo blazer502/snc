@@ -161,6 +161,26 @@ struct SimConfig {
   float norepinephrine_level = 0.0f;
   float serotonin_level = 1.0f;
 
+  // Dendritic-compartment integration. A neuron with `n_branches > 1`
+  // sums incoming spikes per branch in `branch_potential`. integrate
+  // converts each branch's potential into a soma contribution:
+  //   if branch_potential[b] >= dendritic_threshold:
+  //       soma_drive += dendritic_spike_amplitude
+  //       branch_potential[b] = 0   (the branch fired its NMDA plateau)
+  //   else:
+  //       soma_drive += branch_potential[b] * dendritic_passive_gain
+  //       branch_potential[b] *= dendritic_decay
+  // Defaults make the multi-branch path a no-op for n_branches == 1.
+  float dendritic_threshold = 1.0e9f;     // never triggered by default
+  float dendritic_spike_amplitude = 1.5f;
+  float dendritic_passive_gain = 1.0f;
+  float dendritic_decay = 0.0f;            // 0 = instantaneous (legacy)
+
+  // When sprouting / synaptogenesis create a new synapse, its `branch`
+  // field is set to this. Demos that want sprouted plasticity to land
+  // on a different dendrite from hand-installed priors can flip this.
+  uint8_t synaptogenesis_default_branch = 0;
+
   unsigned seed = 1234u;
 };
 
@@ -243,9 +263,16 @@ class Simulator {
   // exact control of the wiring) and for bootstrapping demos that need an
   // initial input -> output path before structural plasticity has had time
   // to grow one. The grid is *not* mutated; structural plasticity will
-  // continue to evolve the connectome from here.
+  // continue to evolve the connectome from here. `branch` selects which
+  // dendritic branch on the post neuron the synapse lands on (default 0).
   void install_synapse(uint32_t pre_id, uint32_t post_id, float weight,
-                       int conduction_delay);
+                       int conduction_delay, uint8_t branch = 0);
+
+  // Configure the number of dendritic branches on a neuron. Branches are
+  // independent integrators -- a synapse on branch 0 cannot pool into the
+  // same dendritic spike as a synapse on branch 1. Default is 1 (legacy
+  // single-compartment behaviour).
+  void set_branches(uint32_t neuron_id, uint8_t n_branches);
 
   // Add `n` newly-born neurons inside the current ventricular-zone band
   // (tracked across grow_volume calls). When `area` is non-null the new
@@ -340,6 +367,17 @@ class Simulator {
   // behavioural correlate of slow-wave / REM sleep replay observed in
   // hippocampus and cortex.
   void sleep_consolidate(int n_steps, float boost = 1.6f);
+
+  // Sleep with pattern rehearsal. In addition to internal-noise replay,
+  // each step picks a random pattern from `patterns` and applies it to
+  // the network's INPUT neurons (treating it like an external stimulus
+  // would, but without reward). This models hippocampal replay of recent
+  // experience: the network re-traverses its waking trajectories and
+  // STDP / homeostatic / tag-and-capture machinery consolidates them.
+  void sleep_replay_patterns(int n_steps,
+                              const std::vector<std::vector<float>>& patterns,
+                              int n_features,
+                              float boost = 1.6f);
 
   // Run one full simulation step.
   void step();

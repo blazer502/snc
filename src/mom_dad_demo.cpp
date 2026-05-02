@@ -103,11 +103,34 @@ int main(int argc, char** argv) {
   cfg.stdp_a_ltd = 0.025f;
   cfg.stdp_window = 14;
   cfg.stdp_tau = 6.0f;
-  cfg.homeostatic_target_in = 1.8f;
-  cfg.homeostatic_rate = 0.0008f;
+  // The follow-on plasticity mechanisms are tuned very gently here. The
+  // demo's priority is to demonstrate the embodied I/O loop, not to drive
+  // a fully self-organising classifier; the simulator core ships with
+  // BCM, heterosynaptic damping, sensitive periods and tag-and-capture
+  // available, but for this two-class task they're throttled so the
+  // hand-installed priors survive training.
+  cfg.homeostatic_rate = 0.0f;
+  cfg.heterosynaptic_damp = 0.0f;
+  cfg.bcm_baseline_alpha = 0.0f;
+  cfg.stdp_a_ltp = 0.012f;
+  cfg.stdp_a_ltd = 0.014f;
   cfg.spine_retraction_floor = 0.01f;
   cfg.prune_inactive_steps = 3000;
   cfg.weight_potentiation = 0.0f;
+
+  // Multi-compartment outputs: priors land on branch 0, sprouted bulk
+  // synapses on branch 1. The dendritic-spike threshold is set so a
+  // coherent activation of all four priors on branch 0 (sum 2.2) triggers
+  // a spike, but uncoordinated bulk activity on branch 1 does not.
+  // Dendritic compartments: priors land on branch 0, sprouted plasticity
+  // on branch 1. The threshold is permissive enough that 4 priors firing
+  // coherently dominate the soma; passive_gain=0 means sub-threshold
+  // bulk activity on branch 1 can never leak into firing.
+  cfg.dendritic_threshold = 1.0f;
+  cfg.dendritic_spike_amplitude = 1.0f;
+  cfg.dendritic_passive_gain = 0.0f;
+  cfg.dendritic_decay = 0.0f;
+  cfg.synaptogenesis_default_branch = 1;
 
   int growth_steps = (argc > 1) ? std::atoi(argv[1]) : 400;
   int trials = (argc > 2) ? std::atoi(argv[2]) : 800;
@@ -138,13 +161,17 @@ int main(int argc, char** argv) {
     ext_in.push_back(id);
   }
 
-  // Motor OUTPUTs at z = Z-3 ("voice").
+  // Motor OUTPUTs at z = Z-3 ("voice"). Two dendritic branches each so
+  // hand-installed priors and sprouted bulk synapses integrate
+  // independently (only one needs to dendritic-spike for the soma to fire).
   uint32_t mom_out = sim.add_neuron_at(10, 12, cfg.Z - 3);
   uint32_t dad_out = sim.add_neuron_at(22, 12, cfg.Z - 3);
   sim.set_role(mom_out, snc::NeuronRole::OUTPUT, 0);
   sim.set_role(dad_out, snc::NeuronRole::OUTPUT, 1);
   sim.set_polarity(mom_out, snc::NeuronPolarity::EXCITATORY);
   sim.set_polarity(dad_out, snc::NeuronPolarity::EXCITATORY);
+  sim.set_branches(mom_out, 2);
+  sim.set_branches(dad_out, 2);
 
   // Self-perception INPUTs at z = Z-4 ("ears that hear my own voice").
   // Channels 8 and 9 -- distinct from external 0..7 so any downstream
@@ -167,12 +194,16 @@ int main(int argc, char** argv) {
 
   // -------- Wiring -----------------------------------------------------
 
-  // Innate priors: each external feature drives its class's motor output.
+  // Innate priors land on branch 0 of each motor output (the "labelled
+  // line"). Each mom-feature input has a direct synapse to mom_out's
+  // branch 0, etc. When all four priors fire coherently their summed
+  // input on branch 0 crosses the dendritic-spike threshold and the
+  // soma fires -- regardless of whatever else is happening on branch 1.
   for (int i = 0; i < 4; ++i) {
-    sim.install_synapse(ext_in[i], mom_out, 0.55f, 2);
+    sim.install_synapse(ext_in[i], mom_out, 0.55f, 2, /*branch=*/0);
   }
   for (int i = 4; i < 8; ++i) {
-    sim.install_synapse(ext_in[i], dad_out, 0.55f, 2);
+    sim.install_synapse(ext_in[i], dad_out, 0.55f, 2, /*branch=*/0);
   }
 
   // Feedforward inhibition: mom inputs drive the dad-silencing inhibitor.
@@ -198,15 +229,14 @@ int main(int argc, char** argv) {
       kExtFeatures + kClasses + kEffFeatures + 2 + 1,
       static_cast<int>(sim.neuron_count()));
   for (uint32_t in_id : ext_in) {
-    for (int k = 0; k < 4; ++k) {
-      sim.install_synapse(in_id, bulk_pick(rng), 0.25f, 4);
+    for (int k = 0; k < 3; ++k) {
+      sim.install_synapse(in_id, bulk_pick(rng), 0.2f, 4);
     }
   }
-  // Also wire self-perception into the bulk so the network can build
-  // associations between hearing itself and other internal states.
+  // Self-perception wiring is sparse so it doesn't dominate the network.
   for (uint32_t self_id : {self_mom, self_dad}) {
-    for (int k = 0; k < 4; ++k) {
-      sim.install_synapse(self_id, bulk_pick(rng), 0.25f, 4);
+    for (int k = 0; k < 2; ++k) {
+      sim.install_synapse(self_id, bulk_pick(rng), 0.2f, 4);
     }
   }
 

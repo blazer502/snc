@@ -56,6 +56,14 @@ struct SynapseEdge {
   int conduction_delay = 1;
   std::vector<SpikePacket> transit;  // queue 4 (synapse waiting queue)
 
+  // Dendritic-branch index. Real cortical pyramidals have several
+  // dendrites that integrate independently before contributing to the
+  // soma; a synapse on one dendrite cannot directly compensate for a
+  // synapse on another. We model this by assigning each synapse to a
+  // branch index. Branch sums are computed independently and only their
+  // dendritic-spike or passive contribution is forwarded to the soma.
+  uint8_t branch = 0;
+
   // Productivity statistics used by the probabilistic per-neuron pruning
   // phase. `delivered_count` counts spike deliveries; `caused_fire_count`
   // counts deliveries that were followed by a post-synaptic firing within
@@ -79,10 +87,34 @@ enum class NeuronRole : uint8_t { INTERNAL = 0, INPUT = 1, OUTPUT = 2 };
 // only excitatory or only inhibitory neurotransmitter at all of its
 // synapses. ~80% of cortical neurons are excitatory (glutamatergic), the
 // remaining ~20% are inhibitory (GABAergic). Dispatch flips the sign of
-// every spike packet emitted by an INHIBITORY neuron, which gives the
+// every spike packet emitted by an inhibitory neuron, which gives the
 // network the lateral-inhibition / winner-take-all dynamics needed for
 // sparse coding and clean output decoding.
-enum class NeuronPolarity : uint8_t { EXCITATORY = 0, INHIBITORY = 1 };
+//
+// Three GABAergic subtypes are tracked so the simulator can model their
+// distinct wiring rules (Tremblay, Lee & Rudy 2016):
+//
+//   INHIBITORY (=PV) : parvalbumin-expressing basket cells, fast
+//                       perisomatic inhibition. The default and most
+//                       common inhibitory class. Polarity-sign flip
+//                       on dispatch is the only required behaviour.
+//   INHIBITORY_SST   : somatostatin-expressing Martinotti cells, slow
+//                       dendrite-targeted inhibition. Used for selective
+//                       gating of specific dendritic compartments.
+//   INHIBITORY_VIP   : vasoactive intestinal peptide cells. Their
+//                       canonical role is to inhibit SST cells, opening a
+//                       plasticity window in the dendritic compartments
+//                       (disinhibition).
+//
+// Dispatch currently treats all three as sign-flipping the spike packet.
+// Demos can use the subtype to route specific synapses (e.g., SST cells
+// only target dendritic branches >= 1).
+enum class NeuronPolarity : uint8_t {
+  EXCITATORY      = 0,
+  INHIBITORY      = 1,  // PV+ basket cells (perisomatic, fast)
+  INHIBITORY_SST  = 2,  // Somatostatin (dendritic, slow)
+  INHIBITORY_VIP  = 3,  // VIP (disinhibits SST)
+};
 
 struct Neuron {
   uint32_t id = 0;          // 1-based; 0 is reserved for "no owner"
@@ -116,7 +148,22 @@ struct Neuron {
   // Queue 1: spike magnitudes deposited by the synapse scheduler since the
   // last integrate phase. The integrate phase sums these (plus any direct
   // external `input_acc`) into the membrane potential and clears the queue.
+  // Used only when the post neuron has the default single-branch dendrite
+  // (n_branches == 1); multi-branch neurons receive directly into
+  // `branch_potential` so their compartmental integration is preserved.
   std::vector<float> incoming_queue;
+
+  // Number of dendritic branches. Default 1 = legacy single-compartment
+  // behaviour. Setting >1 turns this neuron into a multi-compartment cell.
+  uint8_t n_branches = 1;
+
+  // Per-branch persistent potential. Sized to `n_branches`. Scheduler
+  // delivery for a synapse on branch b adds the spike magnitude to
+  // `branch_potential[b]` directly. integrate_incoming_phase converts
+  // each branch's accumulated potential into a soma contribution: a
+  // dendritic spike if the branch crossed `dendritic_threshold`, an
+  // attenuated passive contribution otherwise.
+  std::vector<float> branch_potential;
 
   // Sum of all incoming synapse weights, refreshed by the homeostatic
   // phase. Each pre synapse later reads this scalar and rescales its own
