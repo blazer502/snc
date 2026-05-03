@@ -229,6 +229,17 @@ int main(int argc, char** argv) {
                    m[3].neurons, m[3].synapses);
     }
 
+    // Periodic cortical-map snapshot (time-series of position features).
+    // Pairs with `scripts/plot_cortical_map.py` for an animated view of
+    // how the spatial functional layout matures over development.
+    if (mode == "schedule" && s > 0 && s % 100 == 0) {
+      sim.refresh_position_features();
+      char buf[80];
+      std::snprintf(buf, sizeof(buf),
+                    "schedule_pf_step%05d.csv", s);
+      sim.dump_position_features_csv(buf);
+    }
+
     if (s % 40 == 0 || s == total_steps - 1) {
       if (mode == "schedule") {
         const auto m = compute_area_metrics(sim);
