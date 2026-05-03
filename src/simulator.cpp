@@ -30,6 +30,9 @@ Simulator::Simulator(SimConfig cfg)
       grid_(cfg.X, cfg.Y, cfg.Z),
       energy_(cfg.X, cfg.Y, cfg.Z, cfg.region_size, cfg.energy_max),
       owner_(static_cast<std::size_t>(cfg.X) * cfg.Y * cfg.Z, 0u),
+      astrocyte_ca_(static_cast<std::size_t>(energy_.rX()) *
+                        energy_.rY() * energy_.rZ(),
+                    0.0f),
       rng_(cfg.seed) {}
 
 bool Simulator::try_set_neuron(int x, int y, int z, uint32_t owner_id) {
@@ -865,6 +868,22 @@ void Simulator::stdp_phase() {
 
       const float kernel = std::exp(-static_cast<float>(dt) / tau);
 
+      // Astrocyte calcium gating: high local Ca2+ in the synapse's
+      // region (recent synaptic activity reported by neighbouring
+      // glia) up-regulates LTP. Default modulation is 0 -> no effect.
+      float astro_gain = 1.0f;
+      if (cfg_.astrocyte_modulation > 0.0f && !astrocyte_ca_.empty()) {
+        const int R = energy_.region_size();
+        const std::size_t idx = std::size_t(syn.pos.x / R) +
+                                 std::size_t(syn.pos.y / R) *
+                                     energy_.rX() +
+                                 std::size_t(syn.pos.z / R) *
+                                     energy_.rX() * energy_.rY();
+        if (idx < astrocyte_ca_.size()) {
+          astro_gain += cfg_.astrocyte_modulation * astrocyte_ca_[idx];
+        }
+      }
+
       // BCM modulation of LTP amplitude: when the post is firing well
       // above its own baseline, LTP shrinks toward zero; below baseline
       // it stays near the unmodulated rate. The modulation is a smooth
@@ -877,7 +896,7 @@ void Simulator::stdp_phase() {
           std::max(0.05f,
                    std::min(1.5f,
                             1.0f - 0.5f * post.fire_rate_ema / bcm_threshold));
-      const float dw = a_ltp * kernel * bcm_factor;
+      const float dw = a_ltp * kernel * bcm_factor * astro_gain;
 
       syn.weight += dw;
       if (syn.weight > cfg_.weight_max) syn.weight = cfg_.weight_max;
@@ -1063,6 +1082,22 @@ void Simulator::scheduler_dispatch_phase() {
             syn.vesicle_state -= cfg_.release_depression;
             if (syn.vesicle_state < 0.0f) syn.vesicle_state = 0.0f;
           }
+          // Astrocyte calcium: each release adds a tiny contribution to
+          // the local region's Ca2+ accumulator. The astrocyte reports
+          // "this patch is working hard"; stdp_phase reads this as a
+          // local plasticity-gain modulator.
+          if (cfg_.astrocyte_release_increment > 0.0f &&
+              !astrocyte_ca_.empty()) {
+            const int R = energy_.region_size();
+            const std::size_t idx = std::size_t(syn.pos.x / R) +
+                                     std::size_t(syn.pos.y / R) *
+                                         energy_.rX() +
+                                     std::size_t(syn.pos.z / R) *
+                                         energy_.rX() * energy_.rY();
+            if (idx < astrocyte_ca_.size()) {
+              astrocyte_ca_[idx] += cfg_.astrocyte_release_increment;
+            }
+          }
 
           // LTD half of STDP: if the post fired *before* this delivery
           // arrived, the spike is too late to be causal. The same NMDA /
@@ -1145,6 +1180,12 @@ void Simulator::energy_regen_phase() {
     float& e = energy_.energy_at(nu.soma.x, nu.soma.y, nu.soma.z);
     e -= cfg_.fire_cost;
     if (e < 0.0f) e = 0.0f;
+  }
+
+  // Astrocyte calcium decay. Each region's Ca2+ accumulator drifts
+  // toward zero between releases, modelling astrocyte Ca2+ buffering.
+  if (cfg_.astrocyte_decay < 1.0f && !astrocyte_ca_.empty()) {
+    for (auto& v : astrocyte_ca_) v *= cfg_.astrocyte_decay;
   }
 }
 

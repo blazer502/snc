@@ -192,6 +192,18 @@ struct SimConfig {
   float release_depression = 0.0f;
   float release_recovery   = 0.0f;
 
+  // Tripartite-synapse / astrocyte calcium modulation. A per-region
+  // calcium accumulator integrates synaptic activity (every release
+  // adds `astrocyte_release_increment` to its region), decays each
+  // step by `astrocyte_decay`, and during STDP multiplies the LTP
+  // amplitude by (1 + astrocyte_modulation * local_calcium). High
+  // local synaptic traffic therefore *gates* plasticity in that
+  // patch of cortex -- the astrocyte is reporting "this region is
+  // working hard, go ahead and consolidate". Default 0 disables.
+  float astrocyte_release_increment = 0.0f;
+  float astrocyte_decay = 0.99f;
+  float astrocyte_modulation = 0.0f;
+
   // Dendritic-compartment integration. A neuron with `n_branches > 1`
   // sums incoming spikes per branch in `branch_potential`. integrate
   // converts each branch's potential into a soma contribution:
@@ -610,6 +622,12 @@ class Simulator {
   std::vector<uint32_t> owner_;
 
   std::vector<Neuron> neurons_;
+
+  // Per-region astrocyte calcium accumulator. Same coarse spatial
+  // grid as the energy field; integrates synaptic-release events,
+  // decays each step, and scales local STDP amplitude. Empty unless
+  // the demo configures non-zero astrocyte fields.
+  std::vector<float> astrocyte_ca_;
 
   StepStats last_stats_{};
 
