@@ -111,6 +111,16 @@ def session_commands(session: int, brain_path: Path) -> list:
             cmds.extend([f"teach {new_word}", "correct",
                           f"teach {new_word}", "correct"])
         taught = ALL_WORDS[:session]
+        # Spaced rehearsal: every 3rd teaching session also re-teaches
+        # the OLDEST word once. This is the empirically validated
+        # human-learning curriculum: spaced repetition of older
+        # material during new acquisition gives a ~2x retention
+        # advantage over massed repetition. Without this, the
+        # earliest words quietly drift away as the brain's substrate
+        # changes (neurogenesis, demand-grow, new synapse formation).
+        if session >= 4 and session % 3 == 0:
+            oldest = ALL_WORDS[0]
+            cmds.extend([f"teach {oldest}", "correct"])
     else:
         # Pure review session: skip babble. Random-motor firing during
         # the no-new-teaching window adds noise that competes with
