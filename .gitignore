@@ -12,6 +12,7 @@ schedule_pf_step*.csv
 chat_session.log
 cortical_map_evolution.png
 cortical_map_evolution.gif
+dev_summary.png
 big_vocab_voxels.csv
 big_vocab_neurons.csv
 big_vocab_synapses.csv
