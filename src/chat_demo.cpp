@@ -814,13 +814,15 @@ void cmd_status(Brain& b) {
   b.sim.refresh_position_features();
   say("[status] step=%d  neurons=%zu  synapses=%zu  "
               "structural-blobs=%d  bins=%zu  "
-              "shows=%d/%d  teaches=%d/%d\n",
+              "shows=%d/%d  teaches=%d/%d  "
+              "grid=%dx%dx%d\n",
               b.sim.current_step(), b.sim.neuron_count(),
               b.sim.total_synapses(),
               b.sim.count_structural_neurons(),
               b.sim.position_bin_count(),
               b.correct_shows, b.total_shows,
-              b.correct_teaches, b.total_teaches);
+              b.correct_teaches, b.total_teaches,
+              b.sim.grid().X(), b.sim.grid().Y(), b.sim.grid().Z());
 }
 
 bool process_line(Brain& b, const std::string& raw) {

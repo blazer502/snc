@@ -16,3 +16,7 @@ dev_summary.png
 big_vocab_voxels.csv
 big_vocab_neurons.csv
 big_vocab_synapses.csv
+lifetime_trajectory.csv
+lifetime_summary.png
+lifetime_brain.snc
+lifetime_brain.snc.meta
