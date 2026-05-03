@@ -617,15 +617,55 @@ class Simulator {
   // Promote a learned word/concept into a permanent engram. Selects the
   // OUTPUT neurons whose channel == `output_channel` plus the top
   // `top_k_internal` INTERNAL neurons currently driving the readout
-  // (ranked by `fire_rate_ema`, with a small floor to skip silent cells).
-  // Every synapse whose pre and post are *both* in this set has its
-  // `permanent` flag set and `consolidation_tag` pinned to 1.0, locking
-  // the population-coded recall path against later overwrite by STDP /
-  // pruning / homeostatic scaling. Distributed-engram analogue of
-  // long-term consolidation: the cell-assembly that just succeeded is
-  // anatomically preserved while the weights themselves remain
-  // modulable. Returns the number of synapses newly promoted.
-  int promote_engram(int output_channel, int top_k_internal);
+  // (ranked by `fire_rate_ema * excitability_bias`, with a small raw
+  // fire_rate_ema floor to skip silent cells). Every synapse whose pre
+  // and post are *both* in this set has its `permanent` flag set and
+  // `consolidation_tag` pinned to 1.0, locking the population-coded
+  // recall path against later overwrite by STDP / pruning / homeostatic
+  // scaling. Distributed-engram analogue of long-term consolidation:
+  // the cell-assembly that just succeeded is anatomically preserved
+  // while the weights themselves remain modulable. Returns the number
+  // of synapses newly promoted.
+  //
+  // Memory linking (Josselyn & Tonegawa 2020): the fresh-neuron
+  // preference penalty (~10x for cells already enrolled in some other
+  // class's engram) is softened to ~2x for *same-session* overlaps --
+  // classes taught within the same `set_session_id` window. This
+  // captures the temporal-contiguity rule observed empirically: two
+  // memories acquired close in time share more engram cells than
+  // memories acquired far apart, encoding "these belong together".
+  //
+  // Silent engrams (Tonegawa, Ramirez 2015): when `silent=true`, the
+  // membership table is updated and the synapses are flagged
+  // permanent / tagged (structurally preserved) but the weight floor
+  // is NOT applied -- recall via natural cue stays below threshold.
+  // The engram exists; behavioural readout doesn't. A later
+  // non-silent promote_engram call (or a strong artificial cue via
+  // `imagine`) lifts it back into recallable territory.
+  int promote_engram(int output_channel, int top_k_internal,
+                     bool silent = false);
+
+  // CREB-mediated intrinsic excitability. Multiplicatively biases this
+  // neuron's score during `promote_engram` candidate selection. Real
+  // biology: CREB-induced cells out-compete CREB-low cells for engram
+  // membership at the moment of memory allocation (Han et al. 2007).
+  // Demos call this immediately before an experience to make a
+  // hand-picked subpopulation (e.g. label-feature INPUTs, the target
+  // motor's column, future A1 tonotopic cells) the preferred engram
+  // recruits, instead of letting noise-driven bulk fetal-seed neurons
+  // win on raw fire_rate_ema. Default 1.0 = no bias; reset after the
+  // teach episode so the bias does not contaminate later allocations.
+  void set_excitability_bias(uint32_t neuron_id, float value);
+
+  // Identifies the current "session" for memory linking inside
+  // `promote_engram`. Two classes promoted with the same session id
+  // are considered acquired-together and share engram cells more
+  // freely; classes promoted in different sessions retain the strong
+  // fresh-neuron penalty so they end up on disjoint cell assemblies.
+  // Default session id is 0; demos bump this between training
+  // sessions / days. Sessions are not persisted across save/load --
+  // callers should reset the session id after `load_state`.
+  void set_session_id(int session_id);
 
   // Declare a preferred cortical niche for class `output_channel`.
   // Subsequent promote_engram calls boost candidate neurons whose
@@ -746,6 +786,13 @@ class Simulator {
     int x = 0, y = 0, z = 0, radius = 0;
   };
   std::vector<ClassRegion> class_regions_;
+
+  // Per-class session identifier captured at the most recent
+  // `promote_engram` call. Used by memory linking: classes with the
+  // same session id are temporally co-acquired and the fresh-neuron
+  // penalty between them is relaxed. Sentinel -1 = never promoted.
+  std::vector<int> class_session_;
+  int current_session_id_ = 0;
 
   StepStats last_stats_{};
 

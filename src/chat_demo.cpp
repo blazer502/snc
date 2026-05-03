@@ -240,6 +240,10 @@ struct Brain {
   int last_said = -1;
   bool last_match = false;
   float last_rates[kClasses] = {0};
+  // Neurons whose excitability_bias was raised by the most recent
+  // teach episode. Reset to 1.0 by `correct` / `wrong` so the bias
+  // does not leak into the next teach.
+  std::vector<uint32_t> last_biased;
   // Rolling tallies across show / teach episodes.
   int total_shows = 0;
   int correct_shows = 0;
@@ -611,6 +615,28 @@ void cmd_teach(Brain& b, const std::string& concept) {
     b.sim.apply_input_pattern(zero, kAllFeatures);
     b.sim.step();
   }
+  // Pack 25 / Josselyn & Tonegawa 2020: CREB-style intrinsic
+  // excitability bias on the cells anatomically tied to this concept.
+  // The label-feature INPUTs, the target motor and its self-perception
+  // INPUT all get a 3x boost so promote_engram (later, in cmd_correct)
+  // ranks them ahead of noise-driven bulk fetal-seed neurons that
+  // otherwise win on raw fire_rate_ema. Reset to 1.0 in cmd_correct /
+  // cmd_wrong so the bias doesn't bleed into the next teach episode.
+  std::vector<uint32_t> biased;
+  biased.reserve(kFeatPerClass + 2);
+  for (int f = 0; f < kFeatPerClass; ++f) {
+    const uint32_t id = b.ext_in[c * kFeatPerClass + f];
+    if (id) { b.sim.set_excitability_bias(id, 3.0f); biased.push_back(id); }
+  }
+  if (b.motors[c]) {
+    b.sim.set_excitability_bias(b.motors[c], 3.0f);
+    biased.push_back(b.motors[c]);
+  }
+  if (b.selfs[c]) {
+    b.sim.set_excitability_bias(b.selfs[c], 3.0f);
+    biased.push_back(b.selfs[c]);
+  }
+  b.last_biased = std::move(biased);
   // Multi-modal teaching: present the concept through the label
   // channel (verbal sensory features) AND the self-perception
   // channel ("hearing yourself say it"). The image modality is
@@ -666,6 +692,9 @@ void cmd_correct(Brain& b) {
                 kWords[b.last_target], promoted,
                 b.sim.permanent_synapse_count());
   }
+  // Pack 25: drop the teach-episode excitability bias.
+  for (uint32_t id : b.last_biased) b.sim.set_excitability_bias(id, 1.0f);
+  b.last_biased.clear();
 }
 
 void cmd_wrong(Brain& b) {
@@ -690,6 +719,11 @@ void cmd_wrong(Brain& b) {
     if (confidence > 0.1f) b.sim.apply_aversive(confidence);
   }
   for (int s = 0; s < 4; ++s) b.sim.step();
+  // Pack 25: drop the teach-episode excitability bias even when the
+  // episode is corrected as wrong, so it doesn't leak into the next
+  // teach.
+  for (uint32_t id : b.last_biased) b.sim.set_excitability_bias(id, 1.0f);
+  b.last_biased.clear();
   say("[wrong] -reward + aversive applied; expected %s\n",
               kWords[b.last_target]);
 }
@@ -1180,8 +1214,13 @@ int main(int argc, char** argv) {
     }
     // Save the bumped session count back so the next load advances.
     save_meta(load_path, meta);
+    // Pack 25: tell the simulator which session id we're in so
+    // memory-linking can soften the fresh-neuron penalty between
+    // classes promoted in *this* session vs. previous sessions.
+    b.sim.set_session_id(b.session_count);
   } else {
     build_anatomy(b);
+    b.sim.set_session_id(b.session_count);
     say("[ready] new brain. %d concepts: ", kClasses);
     for (int i = 0; i < kClasses; ++i) {
       say("%s%s", kWords[i], (i + 1 == kClasses) ? "\n" : " ");

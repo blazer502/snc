@@ -725,6 +725,16 @@ void Simulator::reset_dynamics() {
   }
 }
 
+void Simulator::set_excitability_bias(uint32_t neuron_id, float value) {
+  if (neuron_id == 0 || neuron_id > neurons_.size()) return;
+  neurons_[neuron_id - 1].excitability_bias =
+      value < 0.0f ? 0.0f : value;
+}
+
+void Simulator::set_session_id(int session_id) {
+  current_session_id_ = session_id;
+}
+
 void Simulator::set_engram_region(int output_channel, int x, int y, int z,
                                     int radius) {
   if (output_channel < 0) return;
@@ -734,10 +744,14 @@ void Simulator::set_engram_region(int output_channel, int x, int y, int z,
   class_regions_[output_channel] = {x, y, z, std::max(0, radius)};
 }
 
-int Simulator::promote_engram(int output_channel, int top_k_internal) {
+int Simulator::promote_engram(int output_channel, int top_k_internal,
+                              bool silent) {
   if (output_channel < 0) return 0;
   if (static_cast<std::size_t>(output_channel) >= engram_members_.size()) {
     engram_members_.resize(static_cast<std::size_t>(output_channel) + 1);
+  }
+  if (static_cast<std::size_t>(output_channel) >= class_session_.size()) {
+    class_session_.resize(static_cast<std::size_t>(output_channel) + 1, -1);
   }
 
   // 1. Persistent membership: always re-include the existing engram
@@ -765,11 +779,17 @@ int Simulator::promote_engram(int output_channel, int top_k_internal) {
   //    picking the same mixed-selectivity hubs for every word and
   //    every promotion reinforces those shared hubs onto every
   //    motor, collapsing recall into mush.
-  std::vector<bool> in_other_engram(neurons_.size() + 1, false);
+  // Track *which* other class each candidate is enrolled in, so the
+  // memory-linking rule can soften the fresh-neuron penalty between
+  // classes acquired in the same session (Pack 25). 0 = no other
+  // engram; otherwise stores (other_class + 1) for the most recent
+  // owner found.
+  std::vector<int> other_engram_class(neurons_.size() + 1, 0);
   for (std::size_t cls = 0; cls < engram_members_.size(); ++cls) {
     if (static_cast<int>(cls) == output_channel) continue;
     for (uint32_t id : engram_members_[cls]) {
-      if (id <= neurons_.size()) in_other_engram[id] = true;
+      if (id <= neurons_.size())
+        other_engram_class[id] = static_cast<int>(cls) + 1;
     }
   }
   // Per-class preferred niche: candidates inside the sphere get a
@@ -789,8 +809,21 @@ int Simulator::promote_engram(int output_channel, int top_k_internal) {
     if (n.fire_rate_ema <= 0.02f) continue;
     if (std::binary_search(engram_ids.begin(), engram_ids.end(), n.id))
       continue;
-    float score = n.fire_rate_ema;
-    if (in_other_engram[n.id]) score *= 0.1f;  // ~10x penalty for shared
+    // CREB-style allocation bias (Pack 25): rank by activity scaled
+    // by intrinsic excitability, not raw fire_rate_ema. The 0.02
+    // floor above still guards against silent cells slipping in via
+    // a high bias alone.
+    float score = n.fire_rate_ema * n.excitability_bias;
+    if (int other = other_engram_class[n.id]; other > 0) {
+      const int other_cls = other - 1;
+      bool linked = false;
+      if (static_cast<std::size_t>(other_cls) < class_session_.size()) {
+        const int other_session = class_session_[other_cls];
+        linked = (other_session >= 0 &&
+                  other_session == current_session_id_);
+      }
+      score *= linked ? 0.5f : 0.1f;  // soft penalty for memory-linked
+    }
     if (region_active) {
       const float dx = n.soma.x - region.x;
       const float dy = n.soma.y - region.y;
@@ -833,6 +866,7 @@ int Simulator::promote_engram(int output_channel, int top_k_internal) {
     std::sort(engram_ids.begin(), engram_ids.end());
   }
   engram_members_[output_channel] = engram_ids;
+  class_session_[output_channel] = current_session_id_;
 
   // 2. Mark every synapse whose pre AND post are both in the engram.
   int n_marked = 0;
@@ -846,6 +880,7 @@ int Simulator::promote_engram(int output_channel, int top_k_internal) {
       if (!s.permanent) ++n_marked;
       s.permanent = true;
       s.consolidation_tag = 1.0f;
+      if (silent) continue;  // silent engram: skip weight floor
       // Floor the engram-edge weight at half of weight_max so the
       // recall path is electrically functional even if STDP had not
       // yet driven it high. The synapse is still free to potentiate
@@ -2004,9 +2039,9 @@ void rvec(std::ifstream& f, std::vector<T>& v) {
 bool Simulator::save_state(const char* path) const {
   std::ofstream f(path, std::ios::binary);
   if (!f) return false;
-  const char magic[4] = {'S', 'N', 'C', '8'};
+  const char magic[4] = {'S', 'N', 'C', '9'};
   f.write(magic, 4);
-  uint32_t version = 8;
+  uint32_t version = 9;
   wpod(f, version);
   wpod(f, cfg_);
   wpod(f, step_);
@@ -2035,6 +2070,7 @@ bool Simulator::save_state(const char* path) const {
     wpod(f, nu.activity_baseline);
     wpod(f, nu.n_branches);
     wpod(f, nu.predicted_input);
+    wpod(f, nu.excitability_bias);
     wvec(f, nu.branch_potential);
     wvec(f, nu.branch_threshold);
     wvec(f, nu.branch_passive_gain);
@@ -2077,10 +2113,10 @@ bool Simulator::load_state(const char* path) {
   if (!f) return false;
   char magic[4];
   f.read(magic, 4);
-  if (std::memcmp(magic, "SNC8", 4) != 0) return false;
+  if (std::memcmp(magic, "SNC9", 4) != 0) return false;
   uint32_t version;
   rpod(f, version);
-  if (version != 8) return false;
+  if (version != 9) return false;
 
   rpod(f, cfg_);
   rpod(f, step_);
@@ -2117,6 +2153,7 @@ bool Simulator::load_state(const char* path) {
     rpod(f, nu.activity_baseline);
     rpod(f, nu.n_branches);
     rpod(f, nu.predicted_input);
+    rpod(f, nu.excitability_bias);
     rvec(f, nu.branch_potential);
     rvec(f, nu.branch_threshold);
     rvec(f, nu.branch_passive_gain);

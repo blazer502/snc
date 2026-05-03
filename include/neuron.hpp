@@ -233,6 +233,17 @@ struct Neuron {
   // strengthening one synapse forces a cost on its neighbours
   // (heterosynaptic LTD; Royer & Pare 2003).
   float ltp_received_this_step = 0.0f;
+
+  // CREB-mediated intrinsic-excitability bias used during engram
+  // allocation (Josselyn & Tonegawa 2020). Real neurons that happen to
+  // express elevated CREB at the moment of an experience are
+  // preferentially recruited into the engram even if their raw firing
+  // rate is not the highest; the molecular state biases candidacy.
+  // Multiplies the candidate score in `promote_engram`. Default 1.0
+  // = no bias. Demos/curriculum bump this for stimulus-relevant cells
+  // (e.g. label-feature INPUTs, target motor column, future A1
+  // tonotopic cells) immediately before a teach episode.
+  float excitability_bias = 1.0f;
 };
 
 }  // namespace snc
