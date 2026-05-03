@@ -484,7 +484,7 @@ void Simulator::randomize_polarity(float inhibitory_fraction) {
 
 void Simulator::install_synapse(uint32_t pre_id, uint32_t post_id,
                                  float weight, int conduction_delay,
-                                 uint8_t branch) {
+                                 uint8_t branch, float innate_tag) {
   if (pre_id == 0 || pre_id > neurons_.size()) return;
   if (post_id == 0 || post_id > neurons_.size()) return;
   Neuron& pre = neurons_[pre_id - 1];
@@ -502,6 +502,14 @@ void Simulator::install_synapse(uint32_t pre_id, uint32_t post_id,
                     ? static_cast<uint8_t>(std::min<uint32_t>(
                           branch, post.n_branches - 1))
                     : 0;
+  // Innate / labelled-line synapses can be tagged at install time so
+  // they're protected from "use it or lose it" spine retraction --
+  // matching the way real cortex protects key reflex-arc connections
+  // independently of postnatal experience. A non-zero innate_tag also
+  // marks the synapse `permanent`: it survives both spine retraction
+  // and the silence-timeout sweeps regardless of activity.
+  edge.consolidation_tag = innate_tag;
+  edge.permanent = (innate_tag > 0.0f);
   pre.outgoing.push_back(edge);
 }
 
@@ -1032,6 +1040,10 @@ void Simulator::pruning_phase() {
     edges.erase(
         std::remove_if(edges.begin(), edges.end(),
             [&](const SynapseEdge& syn) {
+              // Permanently-marked innate synapses are always spared.
+              // Real cortex protects labelled-line / reflex-arc wiring
+              // from microglial pruning regardless of activity history.
+              if (syn.permanent) return false;
               const bool retracted = syn.weight < cfg_.spine_retraction_floor;
               const bool ancient = (step_ - syn.last_active_step) >
                                    cfg_.prune_inactive_steps;

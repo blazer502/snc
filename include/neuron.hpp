@@ -48,6 +48,16 @@ struct SynapseEdge {
   // structurally stabilised even if activity drops.
   float consolidation_tag = 0.0f;
 
+  // Innate / labelled-line marker. Real cortex protects key reflex-arc
+  // and labelled-line connections (retinogeniculate, brainstem reflexes,
+  // etc.) from microglial pruning regardless of postnatal experience --
+  // these are anatomically-defined wires that the genome wants to
+  // preserve. A permanent synapse is exempt from BOTH the silence-timeout
+  // and the spine-retraction prune paths; only an explicit demo call to
+  // remove it would do so. STDP and reward still freely modulate its
+  // weight; permanence affects only physical removal.
+  bool permanent = false;
+
   // Conduction delay in simulation steps -- equal to the Manhattan distance
   // from the pre-synaptic soma to the synaptic voxel at formation time.
   // Captures the fact that an action potential needs time to propagate

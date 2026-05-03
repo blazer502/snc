@@ -308,8 +308,17 @@ class Simulator {
   // to grow one. The grid is *not* mutated; structural plasticity will
   // continue to evolve the connectome from here. `branch` selects which
   // dendritic branch on the post neuron the synapse lands on (default 0).
+  //
+  // `innate_tag` sets the synapse's consolidation_tag to that value at
+  // install time -- a tag >= cfg.tag_protection (default 0.3) shields
+  // the synapse from spine retraction even when it stays silent for a
+  // long stretch. Pass 0 (default) for normal "use it or lose it"
+  // dynamics; pass 1.0 for a fully-protected innate / labelled-line
+  // connection that survives multi-stage curricula where its source
+  // channel may not fire for a while.
   void install_synapse(uint32_t pre_id, uint32_t post_id, float weight,
-                       int conduction_delay, uint8_t branch = 0);
+                       int conduction_delay, uint8_t branch = 0,
+                       float innate_tag = 0.0f);
 
   // Configure the number of dendritic branches on a neuron. Branches are
   // independent integrators -- a synapse on branch 0 cannot pool into the
