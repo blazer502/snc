@@ -167,6 +167,28 @@ const char* utter(const float* rates) {
   return kWords[top];
 }
 
+// Familiarity classification for the conversational protocol. Looks
+// only at the readout rates (no comparison to the shown stimulus --
+// the brain doesn't know what was shown, only what its own circuits
+// produced). Three levels mirroring known/guess/unknown in human
+// word recognition:
+//   KNOW    : confident recall; top >= 0.10 AND top - second >= 0.04
+//   GUESS   : weak recall; top >= 0.04 AND top - second >= 0.02
+//   UNKNOWN : nothing meaningful won the readout
+// Returns the corresponding [tag] literal.
+const char* familiarity_tag(const float* rates) {
+  int top = argmax_of(rates, kClasses);
+  float second = 0.0f;
+  for (int i = 0; i < kClasses; ++i) {
+    if (i != top && rates[i] > second) second = rates[i];
+  }
+  const float t = rates[top];
+  const float c = t - second;
+  if (t >= 0.10f && c >= 0.04f) return "[know]";
+  if (t >= 0.04f && c >= 0.02f) return "[guess]";
+  return "[unknown]";
+}
+
 snc::SimConfig make_config() {
   snc::SimConfig cfg;
   // Bigger volume: 12 motor / inhibitor / self clusters and 48 ext
@@ -491,6 +513,10 @@ void cmd_help() {
       "  hear <concept>             external drive on self-channel\n"
       "                             (full activation: 'I heard it')\n"
       "  see <concept>              4x4 retinal image input -> motor\n"
+      "  imagine <concept>          internal recall: self-cue only,\n"
+      "                             motor read-out is the engram's\n"
+      "                             reactivation. tags as know/guess/\n"
+      "                             unknown.\n"
       "  correct                    last response was right; reward\n"
       "  wrong                      last response was wrong; aversive\n"
       "  sleep [<sws> <rem>]        SWS+REM consolidation cycle\n"
@@ -550,9 +576,20 @@ void cmd_show(Brain& b, const std::string& concept) {
   std::memcpy(b.last_rates, rates, sizeof(rates));
   ++b.total_shows;
   if (b.last_match) ++b.correct_shows;
-  say("[show] shown=%s  said=%s  rates=", concept.c_str(), said);
+  const char* fam = familiarity_tag(rates);
+  say("[show] shown=%s  said=%s  fam=%s  rates=",
+              concept.c_str(), said, fam);
   for (int i = 0; i < kClasses; ++i) say(" %s:%.2f", kWords[i], rates[i]);
   say("  show-acc=%d/%d\n", b.correct_shows, b.total_shows);
+  // Conversational protocol: when the readout is unknown the brain
+  // asks back, inviting the operator to teach. This is the analogue
+  // of a child saying "what?" when they hear a word they don't
+  // recognise -- curiosity-driven label acquisition rather than
+  // silent failure.
+  if (std::strcmp(fam, "[unknown]") == 0) {
+    say("[ask] what? (heard '%s' but did not recognise it)\n",
+                concept.c_str());
+  }
 }
 
 void cmd_teach(Brain& b, const std::string& concept) {
@@ -732,6 +769,49 @@ void cmd_hear(Brain& b, const std::string& concept) {
   say("\n");
 }
 
+void cmd_imagine(Brain& b, const std::string& concept) {
+  // Internal recall: drive a self-channel cue ("I'm thinking of X")
+  // with no external label pattern and no motor injection. Whatever
+  // the motor read-out shows is the engram's own reactivation from
+  // a top-down trigger -- the model's "imagery" of the word. A
+  // strong, well-consolidated engram should still produce the
+  // matching motor; a missing or interfered engram will read out
+  // [unknown] and prove the word is no longer mentally available.
+  const int c = word_index(concept);
+  if (c < 0) { say("unknown '%s'\n", concept.c_str()); return; }
+  b.sim.clear_eligibility();
+  b.sim.reset_dynamics();
+  float zero[kAllFeatures] = {0};
+  for (int s = 0; s < 20; ++s) {
+    b.sim.apply_input_pattern(zero, kAllFeatures);
+    b.sim.step();
+  }
+  // Imagery drives the label pattern weakly (internal sensory
+  // reactivation -- analogue of V1 imagery activation) AND the
+  // self-channel cue (the "this is me thinking" tag). Together
+  // they reactivate the engram's recall path from a top-down
+  // trigger without the full external sensory drive that `show`
+  // gives. A consolidated word produces the matching motor; a
+  // forgotten one returns [unknown].
+  float pat[kAllFeatures] = {0};
+  make_pattern(c, pat);
+  for (int i = 0; i < kLabelFeatures; ++i) pat[i] *= 0.5f;
+  pat[kExtFeatures + c] = 0.6f;
+  for (int s = 0; s < 30; ++s) {
+    b.sim.apply_input_pattern(pat, kAllFeatures);
+    inject_internal_noise(b);
+    b.sim.step();
+  }
+  float rates[kClasses];
+  b.sim.read_output(rates, kClasses);
+  const char* heard = utter(rates);
+  const char* fam = familiarity_tag(rates);
+  say("[imagine] cue=%s  motor=%s  fam=%s  rates=",
+              concept.c_str(), heard, fam);
+  for (int i = 0; i < kClasses; ++i) say(" %s:%.2f", kWords[i], rates[i]);
+  say("\n");
+}
+
 void cmd_grow(Brain& b, int dx, int dy, int dz) {
   // Grow the simulated volume by `dx`, `dy`, `dz` voxels per side.
   // Each must be a multiple of region_size (8). Neuron coordinates
@@ -874,6 +954,9 @@ bool process_line(Brain& b, const std::string& raw) {
   }
   else if (cmd == "see") {
     std::string c; is >> c; cmd_see(b, c);
+  }
+  else if (cmd == "imagine") {
+    std::string c; is >> c; cmd_imagine(b, c);
   }
   else if (cmd == "correct") cmd_correct(b);
   else if (cmd == "wrong")   cmd_wrong(b);
