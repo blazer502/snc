@@ -685,13 +685,29 @@ void cmd_wrong(Brain& b) {
               kWords[b.last_target]);
 }
 
+// 4x4 image divided into four 2x2 quadrants. Each saccade fixates
+// one quadrant -- the brain only sees those four pixels at a time,
+// approximating fovea-only acuity. The image as a whole is built up
+// across saccades.
+constexpr int kQuadrantPixels[4][4] = {
+    /* TL */ { 0,  1,  4,  5},
+    /* TR */ { 2,  3,  6,  7},
+    /* BL */ { 8,  9, 12, 13},
+    /* BR */ {10, 11, 14, 15},
+};
+constexpr const char* kQuadrantName[4] = {"TL", "TR", "BL", "BR"};
+
 void cmd_see(Brain& b, const std::string& concept) {
-  // Visual recognition: drive the 4-pixel canonical image of `concept`
-  // on the retinotopic input channels. The visual priors hand-installed
-  // at build time take this directly to the matching motor, so a
-  // freshly-grown brain can already classify by sight without label
-  // training. Future: real preprocessed images instead of canonical
-  // patterns.
+  // Visual recognition with saccadic attention. The 4x4 retinotopic
+  // image is divided into four 2x2 quadrants; on each fixation only
+  // one quadrant's pixels drive the input layer (foveal-acuity
+  // analogue). The brain chooses the next saccade by selecting the
+  // quadrant with the most currently-active-but-unfixated pixels --
+  // a greedy "look at what's still informative" rule, matching the
+  // way salience and unfamiliarity bias human gaze (the user's
+  // "focusing engine like a human's watch"). Stops when every
+  // active pixel in the canonical image has been fixated, or after
+  // a 3-saccade budget.
   const int c = word_index(concept);
   if (c < 0) { say("unknown '%s'\n", concept.c_str()); return; }
   b.sim.clear_eligibility();
@@ -701,19 +717,51 @@ void cmd_see(Brain& b, const std::string& concept) {
     b.sim.apply_input_pattern(zero, kAllFeatures);
     b.sim.step();
   }
-  float pat[kAllFeatures] = {0};
-  for (int p = 0; p < 4; ++p) {
-    pat[kImgChannelStart + kImageBits[c][p]] = 1.0f;
+  // Canonical image as a 16-pixel mask.
+  bool active[kImageFeatures] = {false};
+  for (int p = 0; p < 4; ++p) active[kImageBits[c][p]] = true;
+  bool fixated[kImageFeatures] = {false};
+
+  constexpr int kMaxSaccades = 4;
+  constexpr int kStepsPerFixation = 12;
+  int n_saccades = 0;
+  for (int sac = 0; sac < kMaxSaccades; ++sac) {
+    // Select quadrant with the most unfixated active pixels.
+    int best_q = -1, best_score = 0;
+    for (int q = 0; q < 4; ++q) {
+      int score = 0;
+      for (int p = 0; p < 4; ++p) {
+        const int idx = kQuadrantPixels[q][p];
+        if (active[idx] && !fixated[idx]) ++score;
+      }
+      if (score > best_score) { best_score = score; best_q = q; }
+    }
+    if (best_q < 0) break;  // nothing left to fixate
+    ++n_saccades;
+    say("[saccade %d] q=%s active_in_q=%d\n",
+                sac + 1, kQuadrantName[best_q], best_score);
+    // Drive only the quadrant's pixels (and only the active ones),
+    // then mark them fixated.
+    float pat[kAllFeatures] = {0};
+    for (int p = 0; p < 4; ++p) {
+      const int idx = kQuadrantPixels[best_q][p];
+      if (active[idx]) pat[kImgChannelStart + idx] = 1.0f;
+      fixated[idx] = true;
+    }
+    for (int s = 0; s < kStepsPerFixation; ++s) {
+      b.sim.apply_input_pattern(pat, kAllFeatures);
+      inject_internal_noise(b);
+      b.sim.step();
+    }
   }
-  for (int s = 0; s < 30; ++s) {
-    b.sim.apply_input_pattern(pat, kAllFeatures);
-    inject_internal_noise(b);
-    b.sim.step();
-  }
+  // Final read-out after the scanpath. The motor that fires reflects
+  // accumulated evidence integrated across all fixations.
   float rates[kClasses];
   b.sim.read_output(rates, kClasses);
   const char* said = utter(rates);
-  say("[see] image=%s  said=%s  rates=", concept.c_str(), said);
+  const char* fam = familiarity_tag(rates);
+  say("[see] image=%s  saccades=%d  said=%s  fam=%s  rates=",
+              concept.c_str(), n_saccades, said, fam);
   for (int i = 0; i < kClasses; ++i) say(" %s:%.2f", kWords[i], rates[i]);
   say("\n");
 }
