@@ -8,6 +8,9 @@ vocab_synapses.csv
 vocab_position_features.csv
 schedule_position_features.csv
 schedule_pf_step*.csv
+chat_session.log
+cortical_map_evolution.png
+cortical_map_evolution.gif
 big_vocab_voxels.csv
 big_vocab_neurons.csv
 big_vocab_synapses.csv

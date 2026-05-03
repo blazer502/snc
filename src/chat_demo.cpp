@@ -36,9 +36,11 @@
 #include "simulator.hpp"
 
 #include <algorithm>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <iostream>
 #include <random>
 #include <sstream>
@@ -47,6 +49,34 @@
 #include <vector>
 
 namespace {
+
+// Optional persistent log: every line `say()` prints to stdout is also
+// written here when set, so a session transcript can be reviewed later.
+// Opened from main() if --log <path> is on the command line, or
+// automatically to chat_session.log if not specified.
+std::FILE* g_log = nullptr;
+
+void say(const char* fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  std::vfprintf(stdout, fmt, ap);
+  va_end(ap);
+  if (g_log) {
+    va_start(ap, fmt);
+    std::vfprintf(g_log, fmt, ap);
+    va_end(ap);
+    std::fflush(g_log);
+  }
+}
+
+void log_input(const std::string& line) {
+  // Mirror user-typed commands into the log so the transcript is
+  // round-trippable. stdin is not echoed to stdout, so stdout alone
+  // would only show the responses.
+  if (!g_log) return;
+  std::fprintf(g_log, "> %s\n", line.c_str());
+  std::fflush(g_log);
+}
 
 constexpr int kClasses = 6;
 constexpr int kFeatPerClass = 4;
@@ -140,6 +170,11 @@ struct Brain {
   int last_said = -1;
   bool last_match = false;
   float last_rates[kClasses] = {0};
+  // Rolling tallies across show / teach episodes.
+  int total_shows = 0;
+  int correct_shows = 0;
+  int total_teaches = 0;
+  int correct_teaches = 0;
 
   explicit Brain(snc::SimConfig cfg)
       : sim(cfg), rng(0xCC0DE) {}
@@ -276,7 +311,7 @@ void run_present(Brain& b, const float* pattern, int prime_target,
 // Commands --------------------------------------------------------------
 
 void cmd_help() {
-  std::printf(
+  say(
       "commands:\n"
       "  help                   list commands\n"
       "  concepts               list available concepts\n"
@@ -292,9 +327,9 @@ void cmd_help() {
 }
 
 void cmd_concepts() {
-  std::printf("concepts (%d):\n", kClasses);
+  say("concepts (%d):\n", kClasses);
   for (int i = 0; i < kClasses; ++i) {
-    std::printf("  %s\n", kWords[i]);
+    say("  %s\n", kWords[i]);
   }
 }
 
@@ -309,13 +344,13 @@ void cmd_babble(Brain& b, int n) {
     }
     for (int s = 0; s < 4; ++s) b.sim.step();
   }
-  std::printf("[babble] %d trials done. step=%d, synapses=%zu\n",
+  say("[babble] %d trials done. step=%d, synapses=%zu\n",
               n, b.sim.current_step(), b.sim.total_synapses());
 }
 
 void cmd_show(Brain& b, const std::string& concept) {
   const int c = word_index(concept);
-  if (c < 0) { std::printf("unknown concept '%s'\n", concept.c_str()); return; }
+  if (c < 0) { say("unknown concept '%s'\n", concept.c_str()); return; }
   b.sim.clear_eligibility();
   b.sim.reset_dynamics();
   // Silent gap so the previous response decays.
@@ -339,14 +374,16 @@ void cmd_show(Brain& b, const std::string& concept) {
   b.last_said = said_idx;
   b.last_match = (said_idx == c);
   std::memcpy(b.last_rates, rates, sizeof(rates));
-  std::printf("[show] shown=%s  said=%s  rates=", concept.c_str(), said);
-  for (int i = 0; i < kClasses; ++i) std::printf(" %s:%.2f", kWords[i], rates[i]);
-  std::printf("\n");
+  ++b.total_shows;
+  if (b.last_match) ++b.correct_shows;
+  say("[show] shown=%s  said=%s  rates=", concept.c_str(), said);
+  for (int i = 0; i < kClasses; ++i) say(" %s:%.2f", kWords[i], rates[i]);
+  say("  show-acc=%d/%d\n", b.correct_shows, b.total_shows);
 }
 
 void cmd_teach(Brain& b, const std::string& concept) {
   const int c = word_index(concept);
-  if (c < 0) { std::printf("unknown concept '%s'\n", concept.c_str()); return; }
+  if (c < 0) { say("unknown concept '%s'\n", concept.c_str()); return; }
   b.sim.clear_eligibility();
   b.sim.reset_dynamics();
   float zero[kAllFeatures] = {0};
@@ -365,13 +402,16 @@ void cmd_teach(Brain& b, const std::string& concept) {
   b.last_said = said_idx;
   b.last_match = (said_idx == c);
   std::memcpy(b.last_rates, rates, sizeof(rates));
-  std::printf("[teach] target=%s  said=%s%s\n", concept.c_str(), said,
-              b.last_match ? "  (match)" : "");
+  ++b.total_teaches;
+  if (b.last_match) ++b.correct_teaches;
+  say("[teach] target=%s  said=%s%s  teach-acc=%d/%d\n",
+              concept.c_str(), said, b.last_match ? "  (match)" : "",
+              b.correct_teaches, b.total_teaches);
 }
 
 void cmd_correct(Brain& b) {
   if (b.last_target < 0) {
-    std::printf("[correct] no last episode\n");
+    say("[correct] no last episode\n");
     return;
   }
   float rewards[kClasses];
@@ -380,13 +420,13 @@ void cmd_correct(Brain& b) {
   }
   b.sim.apply_reward_per_class(rewards, kClasses, 0.1f);
   for (int s = 0; s < 4; ++s) b.sim.step();
-  std::printf("[correct] +reward applied to '%s'\n",
+  say("[correct] +reward applied to '%s'\n",
               kWords[b.last_target]);
 }
 
 void cmd_wrong(Brain& b) {
   if (b.last_target < 0) {
-    std::printf("[wrong] no last episode\n");
+    say("[wrong] no last episode\n");
     return;
   }
   float rewards[kClasses];
@@ -406,18 +446,66 @@ void cmd_wrong(Brain& b) {
     if (confidence > 0.1f) b.sim.apply_aversive(confidence);
   }
   for (int s = 0; s < 4; ++s) b.sim.step();
-  std::printf("[wrong] -reward + aversive applied; expected %s\n",
+  say("[wrong] -reward + aversive applied; expected %s\n",
               kWords[b.last_target]);
+}
+
+void cmd_tell(Brain& b, const std::vector<std::string>& words) {
+  // Sequence presentation: each word is shown briefly with a small
+  // silent gap between, and the network's spoken response is recorded
+  // in order. Useful for compositional teaching ("hi mom" -> greeting
+  // followed by addressee). No reward is applied -- callers can still
+  // run `correct` / `wrong` against the *last* item if they want.
+  if (words.empty()) {
+    say("[tell] no words\n");
+    return;
+  }
+  std::vector<std::string> heard;
+  heard.reserve(words.size());
+  for (const std::string& w : words) {
+    const int c = word_index(w);
+    if (c < 0) {
+      say("[tell] unknown concept '%s'; aborting sequence\n",
+                  w.c_str());
+      return;
+    }
+    b.sim.reset_dynamics();
+    float zero[kAllFeatures] = {0};
+    for (int s = 0; s < 12; ++s) {
+      b.sim.apply_input_pattern(zero, kAllFeatures);
+      b.sim.step();
+    }
+    float pat[kAllFeatures];
+    make_pattern(c, pat);
+    run_present(b, pat, /*prime=*/-1, 0.0f, 30);
+    float rates[kClasses];
+    b.sim.read_output(rates, kClasses);
+    const char* said = utter(rates);
+    heard.emplace_back(said);
+    // Track the last item so subsequent `correct` / `wrong` works.
+    b.last_target = c;
+    b.last_said = word_index(said);
+    b.last_match = (b.last_said == c);
+    std::memcpy(b.last_rates, rates, sizeof(rates));
+  }
+  say("[tell] heard:");
+  for (std::size_t i = 0; i < words.size(); ++i) {
+    say(" %s->%s", words[i].c_str(), heard[i].c_str());
+  }
+  say("\n");
 }
 
 void cmd_status(Brain& b) {
   b.sim.refresh_position_features();
-  std::printf("[status] step=%d  neurons=%zu  synapses=%zu  "
-              "structural-blobs=%d  bins=%zu\n",
+  say("[status] step=%d  neurons=%zu  synapses=%zu  "
+              "structural-blobs=%d  bins=%zu  "
+              "shows=%d/%d  teaches=%d/%d\n",
               b.sim.current_step(), b.sim.neuron_count(),
               b.sim.total_synapses(),
               b.sim.count_structural_neurons(),
-              b.sim.position_bin_count());
+              b.sim.position_bin_count(),
+              b.correct_shows, b.total_shows,
+              b.correct_teaches, b.total_teaches);
 }
 
 bool process_line(Brain& b, const std::string& raw) {
@@ -440,41 +528,77 @@ bool process_line(Brain& b, const std::string& raw) {
   else if (cmd == "teach") {
     std::string c; is >> c; cmd_teach(b, c);
   }
+  else if (cmd == "tell") {
+    std::vector<std::string> words;
+    std::string w;
+    while (is >> w) words.push_back(w);
+    cmd_tell(b, words);
+  }
   else if (cmd == "correct") cmd_correct(b);
   else if (cmd == "wrong")   cmd_wrong(b);
   else if (cmd == "status")  cmd_status(b);
   else if (cmd == "save") {
     std::string p; is >> p;
     if (p.empty()) p = "chat_brain.snc";
-    std::printf("[save] %s -> %s\n", p.c_str(),
+    say("[save] %s -> %s\n", p.c_str(),
                 b.sim.save_state(p.c_str()) ? "ok" : "FAILED");
   }
   else if (cmd == "load") {
     std::string p; is >> p;
     if (p.empty()) p = "chat_brain.snc";
-    std::printf("[load] %s -> %s\n", p.c_str(),
+    say("[load] %s -> %s\n", p.c_str(),
                 b.sim.load_state(p.c_str()) ? "ok" : "FAILED");
   }
   else if (cmd == "quit" || cmd == "exit") return false;
-  else std::printf("unknown command '%s' (try 'help')\n", cmd.c_str());
+  else say("unknown command '%s' (try 'help')\n", cmd.c_str());
   return true;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
+  // CLI parsing: --load <path> (loads brain), --log <path> (writes
+  // session transcript). Defaults to opening chat_session.log if no
+  // explicit --log was given.
+  const char* load_path = nullptr;
+  const char* log_path = "chat_session.log";
+  for (int i = 1; i < argc; ++i) {
+    std::string arg = argv[i];
+    if (arg == "--load" && i + 1 < argc) {
+      load_path = argv[++i];
+    } else if (arg == "--log" && i + 1 < argc) {
+      log_path = argv[++i];
+    } else if (arg == "--no-log") {
+      log_path = nullptr;
+    } else {
+      std::fprintf(stderr,
+                   "usage: snc_chat [--load <path>] [--log <path> | --no-log]\n");
+      return 1;
+    }
+  }
+  if (log_path) {
+    g_log = std::fopen(log_path, "a");
+    if (g_log) {
+      std::time_t now = std::time(nullptr);
+      char ts[64];
+      std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S",
+                    std::localtime(&now));
+      std::fprintf(g_log, "\n=== snc_chat session started %s ===\n", ts);
+      std::fflush(g_log);
+    } else {
+      std::fprintf(stderr, "warning: could not open %s for logging\n",
+                   log_path);
+    }
+  }
+
   Brain b{make_config()};
 
-  if (argc > 1 && std::string(argv[1]) == "--load") {
-    if (argc < 3) {
-      std::fprintf(stderr, "usage: snc_chat [--load <path>]\n");
+  if (load_path) {
+    if (!b.sim.load_state(load_path)) {
+      std::fprintf(stderr, "load %s failed\n", load_path);
       return 1;
     }
-    if (!b.sim.load_state(argv[2])) {
-      std::fprintf(stderr, "load %s failed\n", argv[2]);
-      return 1;
-    }
-    std::printf("[ready] loaded brain from %s\n", argv[2]);
+    say("[ready] loaded brain from %s\n", load_path);
     // Note: skip_noise mapping needs the role/polarity already in the
     // loaded neurons. Reconstruct it by scanning roles. Inhibitor cells
     // are detected by polarity != EXCITATORY (PV/SST/VIP).
@@ -493,16 +617,26 @@ int main(int argc, char** argv) {
     }
   } else {
     build_anatomy(b);
-    std::printf("[ready] new brain. %d concepts: ", kClasses);
+    say("[ready] new brain. %d concepts: ", kClasses);
     for (int i = 0; i < kClasses; ++i) {
-      std::printf("%s%s", kWords[i], (i + 1 == kClasses) ? "\n" : " ");
+      say("%s%s", kWords[i], (i + 1 == kClasses) ? "\n" : " ");
     }
-    std::printf("[ready] type 'help' for commands.\n");
+    say("[ready] type 'help' for commands.\n");
   }
 
   std::string line;
   while (std::getline(std::cin, line)) {
+    log_input(line);
     if (!process_line(b, line)) break;
+  }
+  if (g_log) {
+    std::time_t now = std::time(nullptr);
+    char ts[64];
+    std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S",
+                  std::localtime(&now));
+    std::fprintf(g_log, "=== snc_chat session ended %s ===\n", ts);
+    std::fclose(g_log);
+    g_log = nullptr;
   }
   return 0;
 }
