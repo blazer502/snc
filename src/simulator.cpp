@@ -645,6 +645,11 @@ void Simulator::apply_reward_per_class(const float* rewards, int n_classes,
           r = rewards[post.channel];
         }
       }
+      // Permanent (engram) synapses ignore *negative* reward signals:
+      // a previously-confirmed recall path cannot be unlearned by a
+      // later curriculum item that simply targets a different class.
+      // Positive rewards are still allowed so engrams can strengthen.
+      if (syn.permanent && r < 0.0f) continue;
       float w = syn.weight + lr * r * syn.eligibility;
       if (w > cfg_.weight_max) w = cfg_.weight_max;
       if (w < 0.0f) w = 0.0f;
@@ -683,6 +688,10 @@ void Simulator::apply_aversive(float intensity) {
         continue;
       const Neuron& post = neurons_[syn.target_neuron - 1];
       if (post.role != NeuronRole::OUTPUT) continue;
+      // Permanent (engram) synapses are exempt from aversive weakening
+      // for the same reason they ignore negative reward: a confirmed
+      // recall path is not undone by later wrong-class punishment.
+      if (syn.permanent) continue;
       float dw = sign * lr * intensity * syn.eligibility;
       float w = syn.weight + dw;
       if (w > cfg_.weight_max) w = cfg_.weight_max;
@@ -714,6 +723,67 @@ void Simulator::reset_dynamics() {
       syn.transit.clear();
     }
   }
+}
+
+int Simulator::promote_engram(int output_channel, int top_k_internal) {
+  // 1. Collect OUTPUT neurons for this channel + a top-K shortlist of
+  //    INTERNAL neurons by current fire_rate_ema. The internal floor
+  //    (0.02) keeps silent cells out of the engram even if K is large.
+  std::vector<uint32_t> engram_ids;
+  for (const Neuron& n : neurons_) {
+    if (n.role == NeuronRole::OUTPUT && n.channel == output_channel) {
+      engram_ids.push_back(n.id);
+    }
+  }
+  std::vector<std::pair<float, uint32_t>> ranked;
+  for (const Neuron& n : neurons_) {
+    if (n.role == NeuronRole::INTERNAL && n.fire_rate_ema > 0.02f) {
+      ranked.emplace_back(n.fire_rate_ema, n.id);
+    }
+  }
+  const int k = std::min<int>(top_k_internal,
+                              static_cast<int>(ranked.size()));
+  std::partial_sort(ranked.begin(), ranked.begin() + k, ranked.end(),
+                    [](const auto& a, const auto& b) {
+                      return a.first > b.first;
+                    });
+  for (int i = 0; i < k; ++i) engram_ids.push_back(ranked[i].second);
+  std::sort(engram_ids.begin(), engram_ids.end());
+  engram_ids.erase(std::unique(engram_ids.begin(), engram_ids.end()),
+                   engram_ids.end());
+
+  // 2. Mark every synapse whose pre AND post are both in the engram.
+  int n_marked = 0;
+  for (Neuron& n : neurons_) {
+    if (!std::binary_search(engram_ids.begin(), engram_ids.end(), n.id))
+      continue;
+    for (SynapseEdge& s : n.outgoing) {
+      if (!std::binary_search(engram_ids.begin(), engram_ids.end(),
+                              s.target_neuron))
+        continue;
+      if (!s.permanent) ++n_marked;
+      s.permanent = true;
+      s.consolidation_tag = 1.0f;
+      // Floor the engram-edge weight at half of weight_max so the
+      // recall path is electrically functional even if STDP had not
+      // yet driven it high. The synapse is still free to potentiate
+      // further; this only prevents an under-trained path from being
+      // promoted without enough drive to reactivate.
+      const float engram_floor = 0.5f * cfg_.weight_max;
+      if (s.weight < engram_floor) s.weight = engram_floor;
+    }
+  }
+  return n_marked;
+}
+
+std::size_t Simulator::permanent_synapse_count() const noexcept {
+  std::size_t n = 0;
+  for (const Neuron& nu : neurons_) {
+    for (const SynapseEdge& s : nu.outgoing) {
+      if (s.permanent) ++n;
+    }
+  }
+  return n;
 }
 
 void Simulator::integrate_incoming_phase() {
@@ -956,6 +1026,11 @@ void Simulator::heterosynaptic_phase() {
       const Neuron& post = neurons_[syn.target_neuron - 1];
       const float total = post.ltp_received_this_step;
       if (total <= 0.0f) continue;
+      // Permanent (engram) synapses are exempt from heterosynaptic
+      // damping: their tag-and-capture state holds the post-synaptic
+      // density resource against competition from later-arriving
+      // potentiation events.
+      if (syn.permanent) continue;
       // Each synapse pays a fixed share of the total LTP. Strong synapses
       // can absorb the cost; weak synapses get pushed lower and may
       // eventually hit the spine retraction floor.
@@ -993,6 +1068,11 @@ void Simulator::homeostatic_phase() {
       // Multiplicative correction toward the target. When total is low
       // the synapse is scaled up; when total is high it is scaled down.
       const float correction = 1.0f + rate * (target - total) / target;
+      // Permanent (engram) synapses are exempt from down-scaling: real
+      // tagged-and-captured spines maintain their AMPA receptor count
+      // against the cell-wide retrograde scaling signal. They are still
+      // allowed to scale *up* when total drops below target.
+      if (syn.permanent && correction < 1.0f) continue;
       syn.weight *= correction;
       if (syn.weight > cfg_.weight_max) syn.weight = cfg_.weight_max;
       if (syn.weight < 0.0f) syn.weight = 0.0f;
@@ -1126,12 +1206,17 @@ void Simulator::scheduler_dispatch_phase() {
           // removes receptors, weakening the synapse. Strictly local --
           // we look only at the post's last_fire_step, which the synapse
           // already needs to know about its own target.
-          const int dt = step_ - post.last_fire_step;
-          if (dt > 0 && dt <= cfg_.stdp_window) {
-            const float kernel =
-                std::exp(-static_cast<float>(dt) / cfg_.stdp_tau);
-            syn.weight -= cfg_.stdp_a_ltd * kernel;
-            if (syn.weight < 0.0f) syn.weight = 0.0f;
+          // Permanent (engram) synapses are exempt from STDP-LTD on
+          // late delivery: the tagged-and-captured spine maintains its
+          // AMPA receptors against per-event acausal weakening.
+          if (!syn.permanent) {
+            const int dt = step_ - post.last_fire_step;
+            if (dt > 0 && dt <= cfg_.stdp_window) {
+              const float kernel =
+                  std::exp(-static_cast<float>(dt) / cfg_.stdp_tau);
+              syn.weight -= cfg_.stdp_a_ltd * kernel;
+              if (syn.weight < 0.0f) syn.weight = 0.0f;
+            }
           }
         }
         syn.last_delivery_step = step_;
@@ -1822,9 +1907,9 @@ void rvec(std::ifstream& f, std::vector<T>& v) {
 bool Simulator::save_state(const char* path) const {
   std::ofstream f(path, std::ios::binary);
   if (!f) return false;
-  const char magic[4] = {'S', 'N', 'C', '5'};
+  const char magic[4] = {'S', 'N', 'C', '6'};
   f.write(magic, 4);
-  uint32_t version = 5;
+  uint32_t version = 6;
   wpod(f, version);
   wpod(f, cfg_);
   wpod(f, step_);
@@ -1852,7 +1937,10 @@ bool Simulator::save_state(const char* path) const {
     wpod(f, nu.incoming_weight_sum);
     wpod(f, nu.activity_baseline);
     wpod(f, nu.n_branches);
+    wpod(f, nu.predicted_input);
     wvec(f, nu.branch_potential);
+    wvec(f, nu.branch_threshold);
+    wvec(f, nu.branch_passive_gain);
     wvec(f, nu.body);
     wvec(f, nu.incoming_queue);
 
@@ -1865,6 +1953,8 @@ bool Simulator::save_state(const char* path) const {
       wpod(f, syn.last_active_step);
       wpod(f, syn.eligibility);
       wpod(f, syn.consolidation_tag);
+      uint8_t perm = syn.permanent ? 1 : 0;
+      wpod(f, perm);
       wpod(f, syn.conduction_delay);
       wpod(f, syn.branch);
       wpod(f, syn.vesicle_state);
@@ -1882,10 +1972,10 @@ bool Simulator::load_state(const char* path) {
   if (!f) return false;
   char magic[4];
   f.read(magic, 4);
-  if (std::memcmp(magic, "SNC5", 4) != 0) return false;
+  if (std::memcmp(magic, "SNC6", 4) != 0) return false;
   uint32_t version;
   rpod(f, version);
-  if (version != 5) return false;
+  if (version != 6) return false;
 
   rpod(f, cfg_);
   rpod(f, step_);
@@ -1921,7 +2011,10 @@ bool Simulator::load_state(const char* path) {
     rpod(f, nu.incoming_weight_sum);
     rpod(f, nu.activity_baseline);
     rpod(f, nu.n_branches);
+    rpod(f, nu.predicted_input);
     rvec(f, nu.branch_potential);
+    rvec(f, nu.branch_threshold);
+    rvec(f, nu.branch_passive_gain);
     rvec(f, nu.body);
     rvec(f, nu.incoming_queue);
 
@@ -1935,6 +2028,9 @@ bool Simulator::load_state(const char* path) {
       rpod(f, syn.last_active_step);
       rpod(f, syn.eligibility);
       rpod(f, syn.consolidation_tag);
+      uint8_t perm;
+      rpod(f, perm);
+      syn.permanent = perm != 0;
       rpod(f, syn.conduction_delay);
       rpod(f, syn.branch);
       rpod(f, syn.vesicle_state);

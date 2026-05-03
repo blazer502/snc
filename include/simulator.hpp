@@ -614,6 +614,23 @@ class Simulator {
                          int n_features,
                          float boost = 2.0f);
 
+  // Promote a learned word/concept into a permanent engram. Selects the
+  // OUTPUT neurons whose channel == `output_channel` plus the top
+  // `top_k_internal` INTERNAL neurons currently driving the readout
+  // (ranked by `fire_rate_ema`, with a small floor to skip silent cells).
+  // Every synapse whose pre and post are *both* in this set has its
+  // `permanent` flag set and `consolidation_tag` pinned to 1.0, locking
+  // the population-coded recall path against later overwrite by STDP /
+  // pruning / homeostatic scaling. Distributed-engram analogue of
+  // long-term consolidation: the cell-assembly that just succeeded is
+  // anatomically preserved while the weights themselves remain
+  // modulable. Returns the number of synapses newly promoted.
+  int promote_engram(int output_channel, int top_k_internal);
+
+  // Total number of synapses currently flagged permanent. Diagnostic
+  // for engram growth across a curriculum.
+  std::size_t permanent_synapse_count() const noexcept;
+
   // Run one full simulation step.
   void step();
 

@@ -594,8 +594,21 @@ void cmd_correct(Brain& b) {
   }
   b.sim.apply_reward_per_class(rewards, kClasses, 0.1f);
   for (int s = 0; s < 4; ++s) b.sim.step();
-  say("[correct] +reward applied to '%s'\n",
-              kWords[b.last_target]);
+  // Engram protection: when the last response actually matched the
+  // target, lock in the recall path. Top 8 internal neurons + the
+  // motor output for this class form the cell assembly; their
+  // mutual synapses become permanent so subsequent words cannot
+  // overwrite them.
+  int promoted = 0;
+  if (b.last_match) {
+    promoted = b.sim.promote_engram(b.last_target, /*top_k_internal=*/8);
+  }
+  say("[correct] +reward applied to '%s'\n", kWords[b.last_target]);
+  if (promoted > 0) {
+    say("[engram] %s: promoted %d synapses (total permanent=%zu)\n",
+                kWords[b.last_target], promoted,
+                b.sim.permanent_synapse_count());
+  }
 }
 
 void cmd_wrong(Brain& b) {
