@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <random>
 
 namespace snc {
@@ -175,6 +176,168 @@ void Simulator::grow_volume(int dx, int dy, int dz) {
   vz_hi_ += dz;
 }
 
+bool Simulator::shrink_volume(int dx, int dy, int dz) {
+  // Mirror of grow_volume: trim `dx` voxels from each side along x, etc.
+  // The to-be-removed rim must be empty (state EMPTY) -- otherwise
+  // tissue would be silently destroyed, which is never the right call.
+  const int R = cfg_.region_size;
+  if (dx < 0 || dy < 0 || dz < 0) return false;
+  if (dx == 0 && dy == 0 && dz == 0) return true;
+  if (dx % R != 0 || dy % R != 0 || dz % R != 0) return false;
+  const int newX = cfg_.X - 2 * dx;
+  const int newY = cfg_.Y - 2 * dy;
+  const int newZ = cfg_.Z - 2 * dz;
+  if (newX <= 0 || newY <= 0 || newZ <= 0) return false;
+
+  // Verify that every voxel falling outside the keep region is EMPTY.
+  for (int z = 0; z < cfg_.Z; ++z) {
+    const bool keep_z = (z >= dz && z < cfg_.Z - dz);
+    for (int y = 0; y < cfg_.Y; ++y) {
+      const bool keep_y = (y >= dy && y < cfg_.Y - dy);
+      for (int x = 0; x < cfg_.X; ++x) {
+        const bool keep_x = (x >= dx && x < cfg_.X - dx);
+        if (keep_x && keep_y && keep_z) continue;
+        if (grid_.get(x, y, z) != BrainGrid::EMPTY) return false;
+      }
+    }
+  }
+
+  BrainGrid new_grid(newX, newY, newZ);
+  for (int z = 0; z < newZ; ++z) {
+    for (int y = 0; y < newY; ++y) {
+      for (int x = 0; x < newX; ++x) {
+        const auto c = grid_.get(x + dx, y + dy, z + dz);
+        if (c != BrainGrid::EMPTY) new_grid.set(x, y, z, c);
+      }
+    }
+  }
+
+  EnergyField new_energy(newX, newY, newZ, R, cfg_.energy_max);
+  const int rdx = dx / R, rdy = dy / R, rdz = dz / R;
+  for (int rz = 0; rz < new_energy.rZ(); ++rz) {
+    for (int ry = 0; ry < new_energy.rY(); ++ry) {
+      for (int rx = 0; rx < new_energy.rX(); ++rx) {
+        new_energy.at(rx, ry, rz) = energy_.at(rx + rdx, ry + rdy, rz + rdz);
+      }
+    }
+  }
+
+  std::vector<uint32_t> new_owner(
+      static_cast<std::size_t>(newX) * newY * newZ, 0u);
+  auto new_lin = [&](int x, int y, int z) {
+    return static_cast<std::size_t>(x) +
+           static_cast<std::size_t>(y) * newX +
+           static_cast<std::size_t>(z) * newX * newY;
+  };
+  for (int z = 0; z < newZ; ++z) {
+    for (int y = 0; y < newY; ++y) {
+      for (int x = 0; x < newX; ++x) {
+        new_owner[new_lin(x, y, z)] =
+            owner_[lin(x + dx, y + dy, z + dz)];
+      }
+    }
+  }
+
+  for (Neuron& nu : neurons_) {
+    nu.soma.x = static_cast<int16_t>(nu.soma.x - dx);
+    nu.soma.y = static_cast<int16_t>(nu.soma.y - dy);
+    nu.soma.z = static_cast<int16_t>(nu.soma.z - dz);
+    for (Voxel& v : nu.body) {
+      v.x = static_cast<int16_t>(v.x - dx);
+      v.y = static_cast<int16_t>(v.y - dy);
+      v.z = static_cast<int16_t>(v.z - dz);
+    }
+    for (SynapseEdge& e : nu.outgoing) {
+      e.pos.x = static_cast<int16_t>(e.pos.x - dx);
+      e.pos.y = static_cast<int16_t>(e.pos.y - dy);
+      e.pos.z = static_cast<int16_t>(e.pos.z - dz);
+    }
+  }
+
+  cfg_.X = newX;
+  cfg_.Y = newY;
+  cfg_.Z = newZ;
+  grid_ = std::move(new_grid);
+  energy_ = std::move(new_energy);
+  owner_ = std::move(new_owner);
+  vz_lo_ -= dz; if (vz_lo_ < 0) vz_lo_ = 0;
+  vz_hi_ -= dz; if (vz_hi_ < 0) vz_hi_ = 0;
+  return true;
+}
+
+namespace {
+
+// Iterative flood-fill over a 3D NEURON-state grid: returns either a
+// single component count or a vector of component sizes, depending on
+// the caller's appetite. Static helper so the public functions stay
+// tiny.
+void flood_components(const BrainGrid& g, std::vector<int>* sizes,
+                       int* count) {
+  const int X = g.X(), Y = g.Y(), Z = g.Z();
+  const std::size_t N = static_cast<std::size_t>(X) * Y * Z;
+  std::vector<uint8_t> visited(N, 0);
+  std::vector<int> stack;
+  stack.reserve(64);
+  auto idx = [&](int x, int y, int z) {
+    return static_cast<std::size_t>(x) +
+           static_cast<std::size_t>(y) * X +
+           static_cast<std::size_t>(z) * X * Y;
+  };
+  static constexpr int kDx[6] = { 1, -1, 0, 0, 0, 0};
+  static constexpr int kDy[6] = { 0, 0, 1, -1, 0, 0};
+  static constexpr int kDz[6] = { 0, 0, 0, 0, 1, -1};
+  int n_components = 0;
+  for (int z = 0; z < Z; ++z) {
+    for (int y = 0; y < Y; ++y) {
+      for (int x = 0; x < X; ++x) {
+        if (visited[idx(x, y, z)]) continue;
+        if (g.get(x, y, z) != BrainGrid::NEURON) continue;
+        ++n_components;
+        int component_size = 0;
+        stack.clear();
+        stack.push_back(static_cast<int>(idx(x, y, z)));
+        visited[idx(x, y, z)] = 1;
+        while (!stack.empty()) {
+          const int li = stack.back();
+          stack.pop_back();
+          ++component_size;
+          const int xx = li % X;
+          const int yy = (li / X) % Y;
+          const int zz = li / (X * Y);
+          for (int k = 0; k < 6; ++k) {
+            const int nx = xx + kDx[k];
+            const int ny = yy + kDy[k];
+            const int nz = zz + kDz[k];
+            if (nx < 0 || nx >= X || ny < 0 || ny >= Y ||
+                nz < 0 || nz >= Z) continue;
+            const std::size_t ni = idx(nx, ny, nz);
+            if (visited[ni]) continue;
+            if (g.get(nx, ny, nz) != BrainGrid::NEURON) continue;
+            visited[ni] = 1;
+            stack.push_back(static_cast<int>(ni));
+          }
+        }
+        if (sizes) sizes->push_back(component_size);
+      }
+    }
+  }
+  if (count) *count = n_components;
+}
+
+}  // namespace
+
+int Simulator::count_structural_neurons() const {
+  int c = 0;
+  flood_components(grid_, nullptr, &c);
+  return c;
+}
+
+std::vector<int> Simulator::structural_neuron_sizes() const {
+  std::vector<int> sizes;
+  flood_components(grid_, &sizes, nullptr);
+  return sizes;
+}
+
 void Simulator::seed_fetal(const FetalSeed& f) {
   // 1. Radial-glia scaffold. A small fraction of (x, y) columns are filled
   //    with BLOCKED voxels along z, representing the radial fibres that
@@ -244,7 +407,49 @@ void Simulator::seed_fetal(const FetalSeed& f) {
     place_in_band(cp_lo, cp_hi, 0);
   }
 
-  // 5. Energy gradient: high near the VZ (where neurogenesis burns glucose),
+  // 5. Innate subcortical / aversive nuclei. These cohorts represent the
+  //    DNA-determined neural primitives a fetus arrives with: brainstem
+  //    tonic generators, thalamic relay cells, and an amygdala-analogue
+  //    aversive nucleus. Each lives in a tiny dedicated volume near the
+  //    VZ floor, separate from the cortical body.
+  std::uniform_real_distribution<float> u01_inner(0.0f, 1.0f);
+
+  // Brainstem: a thin band on z=0..1, randomly scattered.
+  for (int i = 0; i < f.brainstem_neurons; ++i) {
+    place_in_band(0, std::min(1, cfg_.Z - 2), 0);
+  }
+  // Thalamic relay: at z = 1..2, a small (x, y) cluster.
+  for (int i = 0; i < f.thalamic_relay_neurons; ++i) {
+    place_in_band(std::min(1, cfg_.Z - 2),
+                  std::min(2, cfg_.Z - 2), 0);
+  }
+  // Amygdala-analogue aversive nucleus: also low z but offset.
+  for (int i = 0; i < f.aversive_nucleus_neurons; ++i) {
+    place_in_band(std::min(2, cfg_.Z - 2),
+                  std::min(3, cfg_.Z - 2), 0);
+  }
+
+  // 6. GABAergic subtype assignment. After all cortical placements are
+  //    done, randomly designate the configured fractions as PV, SST and
+  //    VIP. The remainder stays excitatory. Cell identity is permanent
+  //    (Dale's principle); demos can override per-neuron with
+  //    set_polarity() if they need specific layouts.
+  if (f.frac_pv + f.frac_sst + f.frac_vip > 0.0f) {
+    for (Neuron& nu : neurons_) {
+      const float r = u01_inner(rng_);
+      if (r < f.frac_pv) {
+        nu.polarity = NeuronPolarity::INHIBITORY;        // PV
+      } else if (r < f.frac_pv + f.frac_sst) {
+        nu.polarity = NeuronPolarity::INHIBITORY_SST;
+      } else if (r < f.frac_pv + f.frac_sst + f.frac_vip) {
+        nu.polarity = NeuronPolarity::INHIBITORY_VIP;
+      } else {
+        nu.polarity = NeuronPolarity::EXCITATORY;
+      }
+    }
+  }
+
+  // 7. Energy gradient: high near the VZ (where neurogenesis burns glucose),
   //    low near the cortical plate (which is metabolically quiet at this
   //    fetal stage). Scale is a fraction of `energy_max` so the regenerate
   //    cap continues to make sense.
@@ -278,10 +483,12 @@ void Simulator::randomize_polarity(float inhibitory_fraction) {
 }
 
 void Simulator::install_synapse(uint32_t pre_id, uint32_t post_id,
-                                 float weight, int conduction_delay) {
+                                 float weight, int conduction_delay,
+                                 uint8_t branch, float innate_tag) {
   if (pre_id == 0 || pre_id > neurons_.size()) return;
   if (post_id == 0 || post_id > neurons_.size()) return;
   Neuron& pre = neurons_[pre_id - 1];
+  Neuron& post = neurons_[post_id - 1];
   SynapseEdge edge;
   edge.target_neuron = post_id;
   edge.pos = pre.soma;  // unused for non-grid synapses
@@ -289,7 +496,54 @@ void Simulator::install_synapse(uint32_t pre_id, uint32_t post_id,
   edge.last_active_step = step_;
   edge.last_delivery_step = step_ - 10000;
   edge.conduction_delay = std::max(1, conduction_delay);
+  // Clamp branch to the post's dendrite count so an over-eager caller
+  // can't write past the branch_potential vector.
+  edge.branch = (post.n_branches > 0)
+                    ? static_cast<uint8_t>(std::min<uint32_t>(
+                          branch, post.n_branches - 1))
+                    : 0;
+  // Innate / labelled-line synapses can be tagged at install time so
+  // they're protected from "use it or lose it" spine retraction --
+  // matching the way real cortex protects key reflex-arc connections
+  // independently of postnatal experience. A non-zero innate_tag also
+  // marks the synapse `permanent`: it survives both spine retraction
+  // and the silence-timeout sweeps regardless of activity.
+  edge.consolidation_tag = innate_tag;
+  edge.permanent = (innate_tag > 0.0f);
   pre.outgoing.push_back(edge);
+}
+
+void Simulator::set_branches(uint32_t neuron_id, uint8_t n_branches) {
+  if (neuron_id == 0 || neuron_id > neurons_.size()) return;
+  if (n_branches == 0) n_branches = 1;
+  Neuron& nu = neurons_[neuron_id - 1];
+  nu.n_branches = n_branches;
+  nu.branch_potential.assign(n_branches, 0.0f);
+  // Per-branch overrides start empty -> fall through to global cfg.
+}
+
+void Simulator::set_branch_threshold(uint32_t neuron_id, uint8_t branch,
+                                      float threshold) {
+  if (neuron_id == 0 || neuron_id > neurons_.size()) return;
+  Neuron& nu = neurons_[neuron_id - 1];
+  if (branch >= nu.n_branches) return;
+  if (nu.branch_threshold.size() < nu.n_branches) {
+    nu.branch_threshold.resize(nu.n_branches,
+                               std::numeric_limits<float>::quiet_NaN());
+  }
+  nu.branch_threshold[branch] = threshold;
+}
+
+void Simulator::set_branch_passive_gain(uint32_t neuron_id, uint8_t branch,
+                                         float gain) {
+  if (neuron_id == 0 || neuron_id > neurons_.size()) return;
+  Neuron& nu = neurons_[neuron_id - 1];
+  if (branch >= nu.n_branches) return;
+  if (nu.branch_passive_gain.size() < nu.n_branches) {
+    nu.branch_passive_gain.resize(nu.n_branches,
+                                  std::numeric_limits<float>::quiet_NaN());
+  }
+  nu.branch_passive_gain[branch] = gain;
 }
 
 uint32_t Simulator::add_neuron_at(int x, int y, int z) {
@@ -382,25 +636,120 @@ void Simulator::apply_reward_per_class(const float* rewards, int n_classes,
   }
 }
 
+void Simulator::apply_aversive(float intensity) {
+  // Aversive plasticity is asymmetric: excitatory synapses that
+  // contributed to the recently-evaluated trajectory get *weakened*
+  // (don't repeat this excitation), while inhibitory synapses that
+  // contributed get *strengthened* (gate against repetition next time).
+  // Per-synapse local update -- only the synapse's own pre/post and the
+  // global aversive signal are read.
+  //
+  // Critically, the signal is restricted to synapses whose *post* is
+  // an OUTPUT neuron. Real aversive learning preferentially reshapes
+  // the action selection step (motor / decision pathways), leaving
+  // sensory and detection pathways intact. Without this filter the
+  // very synapse that *detected* the danger (e.g. pain-receptor ->
+  // amygdala) would be weakened by its own success report.
+  const float lr = cfg_.reward_lr * cfg_.aversive_amplification *
+                   cfg_.serotonin_level;
+  const int nn = static_cast<int>(neurons_.size());
+#pragma omp parallel for schedule(static)
+  for (int i = 0; i < nn; ++i) {
+    Neuron& pre = neurons_[i];
+    const bool inhibitory =
+        (pre.polarity == NeuronPolarity::INHIBITORY ||
+         pre.polarity == NeuronPolarity::INHIBITORY_SST ||
+         pre.polarity == NeuronPolarity::INHIBITORY_VIP);
+    const float sign = inhibitory ? +1.0f : -1.0f;
+    for (auto& syn : pre.outgoing) {
+      if (syn.target_neuron == 0 || syn.target_neuron > neurons_.size())
+        continue;
+      const Neuron& post = neurons_[syn.target_neuron - 1];
+      if (post.role != NeuronRole::OUTPUT) continue;
+      float dw = sign * lr * intensity * syn.eligibility;
+      float w = syn.weight + dw;
+      if (w > cfg_.weight_max) w = cfg_.weight_max;
+      if (w < 0.0f) w = 0.0f;
+      syn.weight = w;
+    }
+  }
+}
+
 void Simulator::clear_eligibility() {
   for (Neuron& nu : neurons_) {
     for (auto& syn : nu.outgoing) syn.eligibility = 0.0f;
   }
 }
 
+void Simulator::reset_dynamics() {
+  for (Neuron& nu : neurons_) {
+    nu.potential = 0.0f;
+    nu.input_acc = 0.0f;
+    nu.fire_rate_ema = 0.0f;
+    nu.fired_this_step = false;
+    // Push last_fire_step far enough in the past that any refractory
+    // window the demo configures is already past.
+    nu.last_fire_step = step_ - 1000000;
+    nu.incoming_queue.clear();
+    std::fill(nu.branch_potential.begin(), nu.branch_potential.end(), 0.0f);
+    nu.ltp_received_this_step = 0.0f;
+    for (auto& syn : nu.outgoing) {
+      syn.transit.clear();
+    }
+  }
+}
+
 void Simulator::integrate_incoming_phase() {
-  // Stage 1->2 boundary: every spike that the scheduler delivered into
-  // a neuron's `incoming_queue` last cycle is summed into `input_acc`,
-  // joining any direct external injection. The queue is then cleared.
-  // Strictly per-neuron and embarrassingly parallel.
+  // Stage 1->2 boundary: synaptic inputs that scheduler_dispatch_phase
+  // accumulated into per-branch dendritic potentials get folded into the
+  // soma's input_acc. Each branch independently checks for an NMDA-style
+  // dendritic spike (a strong, stereotyped soma drive) or contributes a
+  // passively-attenuated portion of its sub-threshold sum.
+  //
+  // For backward compatibility the default config sets dendritic_decay=0,
+  // dendritic_passive_gain=1, dendritic_threshold=inf, which makes a
+  // single-branch neuron behaviourally identical to the legacy "all
+  // synaptic input goes straight into input_acc" model.
   const int nn = static_cast<int>(neurons_.size());
+  const float threshold = cfg_.dendritic_threshold;
+  const float spike_amp = cfg_.dendritic_spike_amplitude;
+  const float passive = cfg_.dendritic_passive_gain;
+  const float ddecay = cfg_.dendritic_decay;
 #pragma omp parallel for schedule(static)
   for (int i = 0; i < nn; ++i) {
     Neuron& nu = neurons_[i];
-    float sum = 0.0f;
-    for (float v : nu.incoming_queue) sum += v;
-    nu.input_acc += sum;
-    nu.incoming_queue.clear();
+    if (nu.branch_potential.size() != nu.n_branches) {
+      nu.branch_potential.assign(nu.n_branches, 0.0f);
+    }
+    for (uint8_t b = 0; b < nu.n_branches; ++b) {
+      float& bp = nu.branch_potential[b];
+      // Per-branch overrides fall back to global cfg if not set or NaN.
+      const float br_threshold =
+          (b < nu.branch_threshold.size() &&
+           !std::isnan(nu.branch_threshold[b]))
+              ? nu.branch_threshold[b]
+              : threshold;
+      const float br_passive =
+          (b < nu.branch_passive_gain.size() &&
+           !std::isnan(nu.branch_passive_gain[b]))
+              ? nu.branch_passive_gain[b]
+              : passive;
+      if (bp >= br_threshold) {
+        nu.input_acc += spike_amp;
+        bp = 0.0f;
+      } else {
+        nu.input_acc += bp * br_passive;
+        bp *= ddecay;
+      }
+    }
+    // Drain the legacy queue too (some demos / external paths may still
+    // use inject_input which may queue here in older builds).
+    if (!nu.incoming_queue.empty()) {
+      float sum = 0.0f;
+      for (float v : nu.incoming_queue) sum += v;
+      nu.input_acc += sum;
+      nu.incoming_queue.clear();
+    }
   }
 }
 
@@ -422,7 +771,17 @@ void Simulator::chemistry_phase() {
     }
     nu.input_acc = 0.0f;
 
-    if (nu.potential >= cfg_.fire_threshold) {
+    // Refractory period: after a recent spike the soma cannot fire
+    // again for `refractory_steps` steps. The accumulated potential
+    // is reset to 0 so it doesn't get to ride out the window. With
+    // refractory_steps == 0 (default) this is a no-op.
+    const bool in_refractory =
+        cfg_.refractory_steps > 0 &&
+        (step_ - nu.last_fire_step) < cfg_.refractory_steps;
+    if (in_refractory) {
+      nu.potential = 0.0f;
+    }
+    if (nu.potential >= cfg_.fire_threshold && !in_refractory) {
       nu.fired_this_step = true;
       nu.last_fire_step = step_;
       nu.potential = 0.0f;
@@ -613,8 +972,15 @@ void Simulator::fire_dispatch_phase() {
     if (!nu.fired_this_step) continue;
     const float soma_e = energy_.energy_at(nu.soma.x, nu.soma.y, nu.soma.z);
     const bool starved = soma_e < cfg_.forward_min_energy;
-    const float sign =
-        (nu.polarity == NeuronPolarity::INHIBITORY) ? -1.0f : 1.0f;
+    // All three inhibitory subtypes (PV, SST, VIP) flip the spike sign
+    // -- they all release GABA. The downstream effect differs by where
+    // their synapses land (PV soma, SST dendrite branches, VIP usually
+    // onto SST), but the polarity flip itself is uniform.
+    const bool inhibitory =
+        (nu.polarity == NeuronPolarity::INHIBITORY ||
+         nu.polarity == NeuronPolarity::INHIBITORY_SST ||
+         nu.polarity == NeuronPolarity::INHIBITORY_VIP);
+    const float sign = inhibitory ? -1.0f : 1.0f;
     for (auto& syn : nu.outgoing) {
       if (starved && syn.weight < cfg_.forward_low_energy_floor) continue;
       SpikePacket pk;
@@ -631,6 +997,9 @@ void Simulator::scheduler_dispatch_phase() {
   // pushes the magnitude into the post neuron's incoming queue (queue 1
   // for the next cycle), updates synapse use accounting and pays the
   // synapse-use energy cost from the synapse's local region.
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  const bool stochastic =
+      cfg_.release_probability > 0.0f && cfg_.release_probability < 1.0f;
   for (Neuron& pre : neurons_) {
     for (auto& syn : pre.outgoing) {
       if (syn.transit.empty()) continue;
@@ -644,9 +1013,31 @@ void Simulator::scheduler_dispatch_phase() {
           ++write;
           continue;
         }
+        // Stochastic vesicle release: a real synapse fails to release
+        // its vesicle with probability ~50% per spike. The dropped
+        // packet still counts as "consumed" for scheduling purposes
+        // but never reaches the post -- baseline noise that helps the
+        // network escape deterministic attractors.
+        const bool released =
+            !stochastic || u(rng_) < cfg_.release_probability;
+        if (!released) {
+          // Drop without delivering. Bookkeeping still advances so the
+          // synapse doesn't appear "stuck". Energy cost is *not* paid
+          // because no vesicle was actually released.
+          continue;
+        }
         if (syn.target_neuron > 0 && syn.target_neuron <= neurons_.size()) {
           Neuron& post = neurons_[syn.target_neuron - 1];
-          post.incoming_queue.push_back(read->magnitude);
+          // Deliver to the right dendritic branch -- multi-compartment
+          // neurons see this synapse contribute only to its own dendrite.
+          // Default n_branches = 1 → branch must be 0, so this is the
+          // single integrator the legacy code already exercised.
+          if (post.branch_potential.size() != post.n_branches) {
+            post.branch_potential.assign(post.n_branches, 0.0f);
+          }
+          uint8_t b = syn.branch;
+          if (b >= post.n_branches) b = 0;
+          post.branch_potential[b] += read->magnitude;
 
           // LTD half of STDP: if the post fired *before* this delivery
           // arrived, the spike is too late to be causal. The same NMDA /
@@ -693,6 +1084,10 @@ void Simulator::pruning_phase() {
     edges.erase(
         std::remove_if(edges.begin(), edges.end(),
             [&](const SynapseEdge& syn) {
+              // Permanently-marked innate synapses are always spared.
+              // Real cortex protects labelled-line / reflex-arc wiring
+              // from microglial pruning regardless of activity history.
+              if (syn.permanent) return false;
               const bool retracted = syn.weight < cfg_.spine_retraction_floor;
               const bool ancient = (step_ - syn.last_active_step) >
                                    cfg_.prune_inactive_steps;
@@ -859,6 +1254,16 @@ void Simulator::synaptogenesis_phase() {
             std::abs(static_cast<int>(pre.soma.x) - nx) +
                 std::abs(static_cast<int>(pre.soma.y) - ny) +
                 std::abs(static_cast<int>(pre.soma.z) - nz));
+        // New synapses land on the configured default branch. For
+        // multi-compartment posts, demos can flip
+        // `synaptogenesis_default_branch` so sprouted plasticity targets
+        // a different dendrite from hand-installed priors.
+        Neuron& post_n = neurons_[other - 1];
+        edge.branch = (post_n.n_branches > 0)
+                          ? static_cast<uint8_t>(std::min<uint32_t>(
+                                cfg_.synaptogenesis_default_branch,
+                                post_n.n_branches - 1))
+                          : 0;
         pre.outgoing.push_back(edge);
         ++last_stats_.synapses_formed;
       }
@@ -949,6 +1354,45 @@ void Simulator::sleep_consolidate(int n_steps, float boost) {
   cfg_.acetylcholine_level = saved_ach;
 }
 
+void Simulator::sleep_replay_patterns(
+    int n_steps, const std::vector<std::vector<float>>& patterns,
+    int n_features, float boost) {
+  // Pattern-replay variant of sleep consolidation. Each step the network
+  // is driven with a pattern drawn at random from the supplied set --
+  // rehearsing experiences that the demo just lived through. STDP is
+  // boosted as in plain consolidate. No reward is broadcast; the
+  // already-tagged synapses use the replay activity to capture more
+  // weight via standard STDP and tag-and-capture rules.
+  if (patterns.empty() || n_features <= 0) {
+    sleep_consolidate(n_steps, boost);
+    return;
+  }
+  const float saved_a_ltp = cfg_.stdp_a_ltp;
+  const float saved_a_ltd = cfg_.stdp_a_ltd;
+  const float saved_ach = cfg_.acetylcholine_level;
+  cfg_.stdp_a_ltp *= boost;
+  cfg_.stdp_a_ltd *= 0.7f;
+  cfg_.acetylcholine_level *= 0.5f;
+
+  std::uniform_int_distribution<int> pick(
+      0, static_cast<int>(patterns.size()) - 1);
+  std::uniform_real_distribution<float> small_noise(0.0f, 0.04f);
+
+  for (int s = 0; s < n_steps; ++s) {
+    const auto& pat = patterns[pick(rng_)];
+    apply_input_pattern(pat.data(),
+                        std::min<int>(n_features, static_cast<int>(pat.size())));
+    for (Neuron& nu : neurons_) {
+      nu.input_acc += small_noise(rng_);
+    }
+    step();
+  }
+
+  cfg_.stdp_a_ltp = saved_a_ltp;
+  cfg_.stdp_a_ltd = saved_a_ltd;
+  cfg_.acetylcholine_level = saved_ach;
+}
+
 // ---- Sleep: persistence layer --------------------------------------------
 //
 // Binary file layout (little-endian, host-aligned):
@@ -1006,9 +1450,9 @@ void rvec(std::ifstream& f, std::vector<T>& v) {
 bool Simulator::save_state(const char* path) const {
   std::ofstream f(path, std::ios::binary);
   if (!f) return false;
-  const char magic[4] = {'S', 'N', 'C', '3'};
+  const char magic[4] = {'S', 'N', 'C', '4'};
   f.write(magic, 4);
-  uint32_t version = 3;
+  uint32_t version = 4;
   wpod(f, version);
   wpod(f, cfg_);
   wpod(f, step_);
@@ -1035,6 +1479,8 @@ bool Simulator::save_state(const char* path) const {
     wpod(f, fired);
     wpod(f, nu.incoming_weight_sum);
     wpod(f, nu.activity_baseline);
+    wpod(f, nu.n_branches);
+    wvec(f, nu.branch_potential);
     wvec(f, nu.body);
     wvec(f, nu.incoming_queue);
 
@@ -1048,6 +1494,7 @@ bool Simulator::save_state(const char* path) const {
       wpod(f, syn.eligibility);
       wpod(f, syn.consolidation_tag);
       wpod(f, syn.conduction_delay);
+      wpod(f, syn.branch);
       wpod(f, syn.delivered_count);
       wpod(f, syn.caused_fire_count);
       wpod(f, syn.last_delivery_step);
@@ -1062,10 +1509,10 @@ bool Simulator::load_state(const char* path) {
   if (!f) return false;
   char magic[4];
   f.read(magic, 4);
-  if (std::memcmp(magic, "SNC3", 4) != 0) return false;
+  if (std::memcmp(magic, "SNC4", 4) != 0) return false;
   uint32_t version;
   rpod(f, version);
-  if (version != 3) return false;
+  if (version != 4) return false;
 
   rpod(f, cfg_);
   rpod(f, step_);
@@ -1100,6 +1547,8 @@ bool Simulator::load_state(const char* path) {
     nu.fired_this_step = fired != 0;
     rpod(f, nu.incoming_weight_sum);
     rpod(f, nu.activity_baseline);
+    rpod(f, nu.n_branches);
+    rvec(f, nu.branch_potential);
     rvec(f, nu.body);
     rvec(f, nu.incoming_queue);
 
@@ -1114,6 +1563,7 @@ bool Simulator::load_state(const char* path) {
       rpod(f, syn.eligibility);
       rpod(f, syn.consolidation_tag);
       rpod(f, syn.conduction_delay);
+      rpod(f, syn.branch);
       rpod(f, syn.delivered_count);
       rpod(f, syn.caused_fire_count);
       rpod(f, syn.last_delivery_step);

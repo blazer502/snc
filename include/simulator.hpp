@@ -161,6 +161,47 @@ struct SimConfig {
   float norepinephrine_level = 0.0f;
   float serotonin_level = 1.0f;
 
+  // Aversive-learning amplification. Real brains weight punishment more
+  // strongly than equivalent reward (negativity bias). When
+  // `apply_aversive` is called, the per-synapse weight change is
+  // `aversive_amplification * reward_lr * intensity * eligibility`.
+  float aversive_amplification = 2.0f;
+
+  // Refractory period (in steps). After firing, a neuron's potential is
+  // forced to 0 for `refractory_steps` steps -- it cannot fire again
+  // during this window even if its input would otherwise drive it. Real
+  // cortical neurons have ~3-5ms absolute refractory + ~10ms relative;
+  // mapped to our coarser step units this typically corresponds to a
+  // few-step block. Default 0 keeps legacy demos identical.
+  int refractory_steps = 0;
+
+  // Probability that a spike actually crosses each synapse on dispatch.
+  // Real cortical synapses release neurotransmitter with ~0.2-0.6
+  // probability per spike; the resulting baseline noise is essential for
+  // breaking the deterministic attractors that pure spike+threshold
+  // models tend to fall into. 1.0 = legacy deterministic transmission.
+  float release_probability = 1.0f;
+
+  // Dendritic-compartment integration. A neuron with `n_branches > 1`
+  // sums incoming spikes per branch in `branch_potential`. integrate
+  // converts each branch's potential into a soma contribution:
+  //   if branch_potential[b] >= dendritic_threshold:
+  //       soma_drive += dendritic_spike_amplitude
+  //       branch_potential[b] = 0   (the branch fired its NMDA plateau)
+  //   else:
+  //       soma_drive += branch_potential[b] * dendritic_passive_gain
+  //       branch_potential[b] *= dendritic_decay
+  // Defaults make the multi-branch path a no-op for n_branches == 1.
+  float dendritic_threshold = 1.0e9f;     // never triggered by default
+  float dendritic_spike_amplitude = 1.5f;
+  float dendritic_passive_gain = 1.0f;
+  float dendritic_decay = 0.0f;            // 0 = instantaneous (legacy)
+
+  // When sprouting / synaptogenesis create a new synapse, its `branch`
+  // field is set to this. Demos that want sprouted plasticity to land
+  // on a different dendrite from hand-installed priors can flip this.
+  uint8_t synaptogenesis_default_branch = 0;
+
   unsigned seed = 1234u;
 };
 
@@ -210,6 +251,43 @@ struct FetalSeed {
   // Fractions in [0, 1] of the simulator's `energy_max`.
   float vz_energy_scale = 1.0f;
   float cp_energy_scale = 0.2f;
+
+  // ------------------ "DNA"-level innate priors ------------------------
+  //
+  // Real brains do not start as undifferentiated neural sheets; the
+  // fetus already contains rough functional subdivisions that genetics
+  // wires before any experience: brainstem oscillators, thalamic relay
+  // nuclei, the amygdala etc. These extra cohorts are placed alongside
+  // the cortex so the network has the analogue of innate reflex /
+  // sensory / aversive circuits the moment seed_fetal returns.
+
+  // GABAergic subtype distribution among the cortical neurons. The
+  // fractions below are taken from rodent cortex (Tremblay et al. 2016).
+  float frac_pv  = 0.14f;   // parvalbumin basket cells (perisomatic)
+  float frac_sst = 0.04f;   // somatostatin Martinotti cells (dendritic)
+  float frac_vip = 0.02f;   // vasoactive intestinal peptide (disinhibitory)
+
+  // Brainstem analogue: a small population of always-on tonic neurons
+  // placed in a narrow z-stripe near the bottom of the volume. They
+  // start each step with a positive bias so the network has spontaneous
+  // baseline drive even before any stimulus arrives -- the simulator's
+  // analogue of brainstem rhythm generators (locus coeruleus, raphe
+  // nuclei, etc.).
+  int brainstem_neurons = 12;
+
+  // Thalamic relay analogue: a population that sits between sensory
+  // INPUT neurons (after the demo wires them) and the cortex, providing
+  // an innate sensory hub. Pre-wired connections are *not* installed by
+  // seed_fetal -- the demo decides whether to use them as a relay --
+  // but the cells exist as recognisable anatomical landmarks.
+  int thalamic_relay_neurons = 16;
+
+  // Innate aversive nucleus (amygdala analogue): a small group of cells
+  // that the demo can wire to "danger" inputs so a special pattern fires
+  // them automatically. Whatever they fire onto is a candidate for the
+  // sim's apply_aversive() to be triggered against. Like the brainstem
+  // population, presence-only here; downstream wiring is up to demos.
+  int aversive_nucleus_neurons = 6;
 };
 
 class Simulator {
@@ -243,9 +321,36 @@ class Simulator {
   // exact control of the wiring) and for bootstrapping demos that need an
   // initial input -> output path before structural plasticity has had time
   // to grow one. The grid is *not* mutated; structural plasticity will
-  // continue to evolve the connectome from here.
+  // continue to evolve the connectome from here. `branch` selects which
+  // dendritic branch on the post neuron the synapse lands on (default 0).
+  //
+  // `innate_tag` sets the synapse's consolidation_tag to that value at
+  // install time -- a tag >= cfg.tag_protection (default 0.3) shields
+  // the synapse from spine retraction even when it stays silent for a
+  // long stretch. Pass 0 (default) for normal "use it or lose it"
+  // dynamics; pass 1.0 for a fully-protected innate / labelled-line
+  // connection that survives multi-stage curricula where its source
+  // channel may not fire for a while.
   void install_synapse(uint32_t pre_id, uint32_t post_id, float weight,
-                       int conduction_delay);
+                       int conduction_delay, uint8_t branch = 0,
+                       float innate_tag = 0.0f);
+
+  // Configure the number of dendritic branches on a neuron. Branches are
+  // independent integrators -- a synapse on branch 0 cannot pool into the
+  // same dendritic spike as a synapse on branch 1. Default is 1 (legacy
+  // single-compartment behaviour).
+  void set_branches(uint32_t neuron_id, uint8_t n_branches);
+
+  // Override the dendritic-spike threshold or passive-gain on a single
+  // branch of a single neuron. Useful for circuits where the
+  // hand-installed innate-prior branch must spike easily while the
+  // synaptogenesis-default branch must stay quiet under bulk noise.
+  // Pass NaN (or omit) to fall back to the global `cfg` value for
+  // that branch.
+  void set_branch_threshold(uint32_t neuron_id, uint8_t branch,
+                            float threshold);
+  void set_branch_passive_gain(uint32_t neuron_id, uint8_t branch,
+                               float gain);
 
   // Add `n` newly-born neurons inside the current ventricular-zone band
   // (tracked across grow_volume calls). When `area` is non-null the new
@@ -268,6 +373,30 @@ class Simulator {
   // This is the analogue of physical brain growth: the matrix itself gets
   // bigger over developmental time, giving room for new sprouting.
   void grow_volume(int dx_each_side, int dy_each_side, int dz_each_side);
+
+  // Shrink the simulated volume by trimming `dx_each_side` voxels from
+  // each side along x (and analogously for y, z). Returns true on
+  // success. Refuses (returns false) if any non-EMPTY voxel sits in the
+  // to-be-removed boundary -- the caller must first arrange for the
+  // outer rim to be empty (e.g. by deferring growth until tissue
+  // density warrants it). Like grow_volume, the trim must be a multiple
+  // of `region_size`.
+  bool shrink_volume(int dx_each_side, int dy_each_side, int dz_each_side);
+
+  // Count "structural neurons": connected components of NEURON-state
+  // voxels in the 2-bit grid, where SYNAPSE and BLOCKED voxels (and
+  // EMPTY) are walls. This is the user's preferred definition --
+  // a single biological neuron is whatever blob of tissue is bounded
+  // by synapses or scaffolding -- and may differ from `neuron_count()`
+  // because two seeded `Neuron` entries can share a connected blob
+  // (rarely, when sprouting bridges them without a synapse forming).
+  int count_structural_neurons() const;
+
+  // Distribution of structural-neuron sizes, in number of voxels per
+  // connected component. Useful for diagnosing whether the brain is
+  // populated by many small cells (early development) or fewer big
+  // ones (matured arborisation).
+  std::vector<int> structural_neuron_sizes() const;
 
   // Mutable access to the runtime config so callers can ramp parameters
   // (e.g. tighten pruning over development) without rebuilding the sim.
@@ -319,9 +448,36 @@ class Simulator {
   void apply_reward_per_class(const float* rewards, int n_classes,
                               float internal_reward = 0.0f);
 
+  // Aversive ("punishment" / "danger") signal. Modelled on amygdala /
+  // habenula-driven aversive learning, distinct from VTA dopamine reward.
+  // Each excitatory synapse independently weakens its weight in
+  // proportion to its eligibility trace (the pre/post pair that produced
+  // the bad outcome shouldn't repeat); each inhibitory synapse instead
+  // strengthens (gating against repetition). Net effect: the network
+  // builds an "avoid this" representation around the pattern that just
+  // caused harm.
+  //
+  // This is the simulator's analogue of "the baby touched the kettle and
+  // learned not to" -- after one strong aversive event the network's
+  // weights drift away from the trajectory that led to it. With
+  // `aversive_amplification` set above 1, aversive learning is faster
+  // than reward learning, matching the well-established negativity bias
+  // (Baumeister 2001, Kahneman & Tversky 1979).
+  void apply_aversive(float intensity);
+
   // Reset every synapse's eligibility trace to zero (between independent
   // trials in a training loop).
   void clear_eligibility();
+
+  // Reset all transient dynamics so the next step starts from a fresh
+  // chemistry baseline: per-neuron membrane potential, input
+  // accumulator, fire-rate EMA, dendritic branch potentials and
+  // incoming queue, plus every synapse's transit packets. Structural
+  // weights, eligibility traces, consolidation tags and the structural
+  // grid are *not* touched -- only the activity state. Useful between
+  // independent probe scenes to avoid leak-over from the previous
+  // scene's saturation.
+  void reset_dynamics();
 
   // -------- Sleep: persist / restore the entire brain state --------------
   //
@@ -340,6 +496,17 @@ class Simulator {
   // behavioural correlate of slow-wave / REM sleep replay observed in
   // hippocampus and cortex.
   void sleep_consolidate(int n_steps, float boost = 1.6f);
+
+  // Sleep with pattern rehearsal. In addition to internal-noise replay,
+  // each step picks a random pattern from `patterns` and applies it to
+  // the network's INPUT neurons (treating it like an external stimulus
+  // would, but without reward). This models hippocampal replay of recent
+  // experience: the network re-traverses its waking trajectories and
+  // STDP / homeostatic / tag-and-capture machinery consolidates them.
+  void sleep_replay_patterns(int n_steps,
+                              const std::vector<std::vector<float>>& patterns,
+                              int n_features,
+                              float boost = 1.6f);
 
   // Run one full simulation step.
   void step();
