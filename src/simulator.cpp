@@ -725,6 +725,15 @@ void Simulator::reset_dynamics() {
   }
 }
 
+void Simulator::set_engram_region(int output_channel, int x, int y, int z,
+                                    int radius) {
+  if (output_channel < 0) return;
+  if (static_cast<std::size_t>(output_channel) >= class_regions_.size()) {
+    class_regions_.resize(static_cast<std::size_t>(output_channel) + 1);
+  }
+  class_regions_[output_channel] = {x, y, z, std::max(0, radius)};
+}
+
 int Simulator::promote_engram(int output_channel, int top_k_internal) {
   if (output_channel < 0) return 0;
   if (static_cast<std::size_t>(output_channel) >= engram_members_.size()) {
@@ -763,6 +772,17 @@ int Simulator::promote_engram(int output_channel, int top_k_internal) {
       if (id <= neurons_.size()) in_other_engram[id] = true;
     }
   }
+  // Per-class preferred niche: candidates inside the sphere get a
+  // multiplicative score boost; candidates outside get a penalty.
+  // This drives different words into different cortical regions,
+  // mirroring the column / area specialisation of real cortex.
+  ClassRegion region;
+  if (output_channel >= 0 &&
+      static_cast<std::size_t>(output_channel) < class_regions_.size()) {
+    region = class_regions_[output_channel];
+  }
+  const bool region_active = region.radius > 0;
+  const float r2 = static_cast<float>(region.radius) * region.radius;
   std::vector<std::pair<float, uint32_t>> ranked;
   for (const Neuron& n : neurons_) {
     if (n.role != NeuronRole::INTERNAL) continue;
@@ -770,7 +790,22 @@ int Simulator::promote_engram(int output_channel, int top_k_internal) {
     if (std::binary_search(engram_ids.begin(), engram_ids.end(), n.id))
       continue;
     float score = n.fire_rate_ema;
-    if (in_other_engram[n.id]) score *= 0.1f;  // ~10x penalty
+    if (in_other_engram[n.id]) score *= 0.1f;  // ~10x penalty for shared
+    if (region_active) {
+      const float dx = n.soma.x - region.x;
+      const float dy = n.soma.y - region.y;
+      const float dz = n.soma.z - region.z;
+      const float d2 = dx * dx + dy * dy + dz * dz;
+      // Inside the sphere -> 2x boost. Outside but within 2*radius
+      // -> linear falloff to 0.5x. Far outside -> 0.25x.
+      if (d2 <= r2) score *= 2.0f;
+      else if (d2 <= 4.0f * r2) {
+        const float t = (d2 - r2) / (3.0f * r2);  // 0..1
+        score *= (2.0f - 1.5f * t);  // 2.0 -> 0.5
+      } else {
+        score *= 0.25f;
+      }
+    }
     ranked.emplace_back(score, n.id);
   }
   const int existing_internal =
@@ -1969,9 +2004,9 @@ void rvec(std::ifstream& f, std::vector<T>& v) {
 bool Simulator::save_state(const char* path) const {
   std::ofstream f(path, std::ios::binary);
   if (!f) return false;
-  const char magic[4] = {'S', 'N', 'C', '7'};
+  const char magic[4] = {'S', 'N', 'C', '8'};
   f.write(magic, 4);
-  uint32_t version = 7;
+  uint32_t version = 8;
   wpod(f, version);
   wpod(f, cfg_);
   wpod(f, step_);
@@ -2031,6 +2066,9 @@ bool Simulator::save_state(const char* path) const {
   uint64_t n_classes = engram_members_.size();
   wpod(f, n_classes);
   for (const auto& v : engram_members_) wvec(f, v);
+  uint64_t n_regions = class_regions_.size();
+  wpod(f, n_regions);
+  for (const auto& r : class_regions_) wpod(f, r);
   return f.good();
 }
 
@@ -2039,10 +2077,10 @@ bool Simulator::load_state(const char* path) {
   if (!f) return false;
   char magic[4];
   f.read(magic, 4);
-  if (std::memcmp(magic, "SNC7", 4) != 0) return false;
+  if (std::memcmp(magic, "SNC8", 4) != 0) return false;
   uint32_t version;
   rpod(f, version);
-  if (version != 7) return false;
+  if (version != 8) return false;
 
   rpod(f, cfg_);
   rpod(f, step_);
@@ -2112,6 +2150,10 @@ bool Simulator::load_state(const char* path) {
   engram_members_.assign(static_cast<std::size_t>(n_classes),
                           std::vector<uint32_t>{});
   for (auto& v : engram_members_) rvec(f, v);
+  uint64_t n_regions = 0;
+  rpod(f, n_regions);
+  class_regions_.assign(static_cast<std::size_t>(n_regions), ClassRegion{});
+  for (auto& r : class_regions_) rpod(f, r);
   return f.good();
 }
 

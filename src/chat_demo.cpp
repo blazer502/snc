@@ -442,6 +442,14 @@ void build_anatomy(Brain& b) {
     sim.set_branch_threshold(inh, 1, 1.0e9f);
     sim.set_branch_passive_gain(inh, 1, 0.0f);
     b.inhibitors.push_back(inh);
+
+    // Per-class engram niche: a sphere centered in the cortical
+    // column under this motor. Subsequent promote_engram calls
+    // bias internal-neuron candidates toward this niche, so each
+    // class's engram lives in its own physical region (analogue of
+    // distinct cortical columns / category-selective patches like
+    // FFA, PPA). Reduces cross-word interference at scale.
+    sim.set_engram_region(c, xm, ym, Z / 2, /*radius=*/9);
   }
 
   // Innate label priors / efference / lateral inhibition (permanent).
@@ -496,6 +504,7 @@ void run_present(Brain& b, const float* pattern, int prime_target,
     b.sim.step();
   }
 }
+
 
 // Commands --------------------------------------------------------------
 

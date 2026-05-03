@@ -627,6 +627,19 @@ class Simulator {
   // modulable. Returns the number of synapses newly promoted.
   int promote_engram(int output_channel, int top_k_internal);
 
+  // Declare a preferred cortical niche for class `output_channel`.
+  // Subsequent promote_engram calls boost candidate neurons whose
+  // soma sits inside the sphere of radius `radius` around (x, y, z),
+  // and penalise candidates outside it. Mirrors how real cortex
+  // gives different concept categories distinct cortical columns
+  // (e.g. faces in fusiform face area, places in PPA): different
+  // words end up in different physical regions, so their engrams
+  // overlap less and learning a new word causes less interference
+  // with previously-stored ones. With `radius == 0` the bias is
+  // turned off for this class.
+  void set_engram_region(int output_channel, int x, int y, int z,
+                          int radius);
+
   // Total number of synapses currently flagged permanent. Diagnostic
   // for engram growth across a curriculum.
   std::size_t permanent_synapse_count() const noexcept;
@@ -724,6 +737,15 @@ class Simulator {
   // the basis-of-intelligence-by-repetition invariant: same
   // engram, more weight, not new engrams.
   std::vector<std::vector<uint32_t>> engram_members_;
+
+  // Per-class preferred cortical region. `class_regions_[c]` is
+  // (cx, cy, cz, radius); radius == 0 means no preference.
+  // Set via set_engram_region; consulted by promote_engram to bias
+  // candidate selection toward the niche.
+  struct ClassRegion {
+    int x = 0, y = 0, z = 0, radius = 0;
+  };
+  std::vector<ClassRegion> class_regions_;
 
   StepStats last_stats_{};
 
