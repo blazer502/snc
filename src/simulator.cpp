@@ -726,31 +726,78 @@ void Simulator::reset_dynamics() {
 }
 
 int Simulator::promote_engram(int output_channel, int top_k_internal) {
-  // 1. Collect OUTPUT neurons for this channel + a top-K shortlist of
-  //    INTERNAL neurons by current fire_rate_ema. The internal floor
-  //    (0.02) keeps silent cells out of the engram even if K is large.
-  std::vector<uint32_t> engram_ids;
+  if (output_channel < 0) return 0;
+  if (static_cast<std::size_t>(output_channel) >= engram_members_.size()) {
+    engram_members_.resize(static_cast<std::size_t>(output_channel) + 1);
+  }
+
+  // 1. Persistent membership: always re-include the existing engram
+  //    set for this class. Repetition reinforces the same cell
+  //    assembly -- new internal neurons are admitted only to top up
+  //    a too-small engram, not to replace existing members. Plus
+  //    every OUTPUT neuron whose channel == output_channel.
+  std::vector<uint32_t> engram_ids = engram_members_[output_channel];
   for (const Neuron& n : neurons_) {
     if (n.role == NeuronRole::OUTPUT && n.channel == output_channel) {
       engram_ids.push_back(n.id);
     }
   }
-  std::vector<std::pair<float, uint32_t>> ranked;
-  for (const Neuron& n : neurons_) {
-    if (n.role == NeuronRole::INTERNAL && n.fire_rate_ema > 0.02f) {
-      ranked.emplace_back(n.fire_rate_ema, n.id);
-    }
-  }
-  const int k = std::min<int>(top_k_internal,
-                              static_cast<int>(ranked.size()));
-  std::partial_sort(ranked.begin(), ranked.begin() + k, ranked.end(),
-                    [](const auto& a, const auto& b) {
-                      return a.first > b.first;
-                    });
-  for (int i = 0; i < k; ++i) engram_ids.push_back(ranked[i].second);
   std::sort(engram_ids.begin(), engram_ids.end());
   engram_ids.erase(std::unique(engram_ids.begin(), engram_ids.end()),
                    engram_ids.end());
+
+  // 2. Top up with currently-firing INTERNAL neurons not yet in the
+  //    engram, until membership reaches the target size. The floor
+  //    (0.02) keeps silent cells out even if the engram is small.
+  //    Score is fire_rate_ema, but neurons already enrolled in
+  //    *other* classes' engrams take a heavy penalty -- we strongly
+  //    prefer fresh hubs so different words get distinct cell
+  //    assemblies. Without this penalty, top-K by raw rate keeps
+  //    picking the same mixed-selectivity hubs for every word and
+  //    every promotion reinforces those shared hubs onto every
+  //    motor, collapsing recall into mush.
+  std::vector<bool> in_other_engram(neurons_.size() + 1, false);
+  for (std::size_t cls = 0; cls < engram_members_.size(); ++cls) {
+    if (static_cast<int>(cls) == output_channel) continue;
+    for (uint32_t id : engram_members_[cls]) {
+      if (id <= neurons_.size()) in_other_engram[id] = true;
+    }
+  }
+  std::vector<std::pair<float, uint32_t>> ranked;
+  for (const Neuron& n : neurons_) {
+    if (n.role != NeuronRole::INTERNAL) continue;
+    if (n.fire_rate_ema <= 0.02f) continue;
+    if (std::binary_search(engram_ids.begin(), engram_ids.end(), n.id))
+      continue;
+    float score = n.fire_rate_ema;
+    if (in_other_engram[n.id]) score *= 0.1f;  // ~10x penalty
+    ranked.emplace_back(score, n.id);
+  }
+  const int existing_internal =
+      static_cast<int>(engram_ids.size()) -
+      // Subtract OUTPUT neurons (channel match) so the budget for
+      // INTERNAL members is independent of motor count.
+      [&]{
+        int n = 0;
+        for (uint32_t id : engram_ids) {
+          if (id == 0 || id > neurons_.size()) continue;
+          const Neuron& nu = neurons_[id - 1];
+          if (nu.role == NeuronRole::OUTPUT &&
+              nu.channel == output_channel) ++n;
+        }
+        return n;
+      }();
+  const int budget = std::max(0, top_k_internal - existing_internal);
+  const int k = std::min<int>(budget, static_cast<int>(ranked.size()));
+  if (k > 0) {
+    std::partial_sort(ranked.begin(), ranked.begin() + k, ranked.end(),
+                      [](const auto& a, const auto& b) {
+                        return a.first > b.first;
+                      });
+    for (int i = 0; i < k; ++i) engram_ids.push_back(ranked[i].second);
+    std::sort(engram_ids.begin(), engram_ids.end());
+  }
+  engram_members_[output_channel] = engram_ids;
 
   // 2. Mark every synapse whose pre AND post are both in the engram.
   int n_marked = 0;
@@ -1922,9 +1969,9 @@ void rvec(std::ifstream& f, std::vector<T>& v) {
 bool Simulator::save_state(const char* path) const {
   std::ofstream f(path, std::ios::binary);
   if (!f) return false;
-  const char magic[4] = {'S', 'N', 'C', '6'};
+  const char magic[4] = {'S', 'N', 'C', '7'};
   f.write(magic, 4);
-  uint32_t version = 6;
+  uint32_t version = 7;
   wpod(f, version);
   wpod(f, cfg_);
   wpod(f, step_);
@@ -1979,6 +2026,11 @@ bool Simulator::save_state(const char* path) const {
       wvec(f, syn.transit);
     }
   }
+  // Per-class engram membership tables. Variable-length: outer count
+  // followed by each class's vector.
+  uint64_t n_classes = engram_members_.size();
+  wpod(f, n_classes);
+  for (const auto& v : engram_members_) wvec(f, v);
   return f.good();
 }
 
@@ -1987,10 +2039,10 @@ bool Simulator::load_state(const char* path) {
   if (!f) return false;
   char magic[4];
   f.read(magic, 4);
-  if (std::memcmp(magic, "SNC6", 4) != 0) return false;
+  if (std::memcmp(magic, "SNC7", 4) != 0) return false;
   uint32_t version;
   rpod(f, version);
-  if (version != 6) return false;
+  if (version != 7) return false;
 
   rpod(f, cfg_);
   rpod(f, step_);
@@ -2055,6 +2107,11 @@ bool Simulator::load_state(const char* path) {
       rvec(f, syn.transit);
     }
   }
+  uint64_t n_classes = 0;
+  rpod(f, n_classes);
+  engram_members_.assign(static_cast<std::size_t>(n_classes),
+                          std::vector<uint32_t>{});
+  for (auto& v : engram_members_) rvec(f, v);
   return f.good();
 }
 

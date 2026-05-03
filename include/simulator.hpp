@@ -717,6 +717,14 @@ class Simulator {
   // the demo configures non-zero astrocyte fields.
   std::vector<float> astrocyte_ca_;
 
+  // Per-class engram membership. `engram_members_[c]` is the sorted
+  // list of neuron ids belonging to class `c`'s engram. Maintained
+  // by promote_engram so repeated rehearsals always reinforce the
+  // same cell assembly rather than spawning a new one each time --
+  // the basis-of-intelligence-by-repetition invariant: same
+  // engram, more weight, not new engrams.
+  std::vector<std::vector<uint32_t>> engram_members_;
+
   StepStats last_stats_{};
 
   // Currently-active ventricular-zone band, in world coordinates. Updated by

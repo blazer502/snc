@@ -602,9 +602,20 @@ void cmd_teach(Brain& b, const std::string& concept) {
     b.sim.apply_input_pattern(zero, kAllFeatures);
     b.sim.step();
   }
+  // Multi-modal teaching: present the concept through the label
+  // channel (verbal sensory features) AND the self-perception
+  // channel ("hearing yourself say it"). The image modality is
+  // intentionally excluded -- the canonical 4-pixel patterns
+  // overlap heavily across classes (e.g. ball shares pixels with
+  // mom, baby, cat, stop), so binding image bits into every
+  // engram leaks recall across words. Image is exercised by
+  // `see` / `imagine` separately. Mirrors how children acquire
+  // word-meaning by hearing + repeating in tight pairing, with
+  // visual referent forming a looser cross-modal association.
   float pat[kAllFeatures];
   make_pattern(c, pat);
-  run_present(b, pat, /*prime=*/c, 0.4f, 16);
+  pat[kExtFeatures + c] = 0.3f;
+  run_present(b, pat, /*prime=*/c, 0.3f, 16);
   float rates[kClasses];
   b.sim.read_output(rates, kClasses);
   const char* said = utter(rates);
