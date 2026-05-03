@@ -407,6 +407,10 @@ void cmd_help() {
       "  show <concept>             present sensory pattern, observe\n"
       "  teach <concept>            present + prime matching motor\n"
       "  tell <c1> <c2> ...         present a sequence, hear responses\n"
+      "  say <concept>              own motor fires + efference predicted\n"
+      "                             (self-channel suppressed: 'I said it')\n"
+      "  hear <concept>             external drive on self-channel\n"
+      "                             (full activation: 'I heard it')\n"
       "  correct                    last response was right; reward\n"
       "  wrong                      last response was wrong; aversive\n"
       "  sleep [<sws> <rem>]        SWS+REM consolidation cycle\n"
@@ -540,6 +544,68 @@ void cmd_wrong(Brain& b) {
               kWords[b.last_target]);
 }
 
+void cmd_say(Brain& b, const std::string& concept) {
+  // Force own motor to fire and *predict* the efference on the
+  // matching self-perception channel. With the prediction set, the
+  // chemistry phase subtracts it from input_acc so the network's
+  // self-channel barely fires -- the network "knows it said the
+  // word" rather than re-perceiving its own voice. Mirrors the
+  // corollary-discharge mechanism that silences auditory cortex
+  // during own-vocalisation.
+  const int c = word_index(concept);
+  if (c < 0) { say("unknown '%s'\n", concept.c_str()); return; }
+  b.sim.clear_eligibility();
+  b.sim.reset_dynamics();
+  float zero[kAllFeatures] = {0};
+  for (int s = 0; s < 20; ++s) {
+    b.sim.apply_input_pattern(zero, kAllFeatures);
+    b.sim.step();
+  }
+  float pred[kAllFeatures] = {0};
+  pred[kExtFeatures + c] = 1.0f;  // predict the incoming efference
+  for (int s = 0; s < 30; ++s) {
+    b.sim.apply_input_pattern(zero, kAllFeatures);
+    b.sim.apply_prediction_pattern(pred, kAllFeatures);
+    b.sim.inject_input(b.motors[c], 1.5f);
+    inject_internal_noise(b);
+    b.sim.step();
+  }
+  float rates[kClasses];
+  b.sim.read_output(rates, kClasses);
+  const float self_r = b.sim.neurons()[b.selfs[c] - 1].fire_rate_ema;
+  say("[say] motor_%s=%.2f  self_%s=%.2f (predicted away)\n",
+      concept.c_str(), rates[c], concept.c_str(), self_r);
+}
+
+void cmd_hear(Brain& b, const std::string& concept) {
+  // External speech: drive the self-perception channel directly,
+  // with no prediction set. The network experiences this as "I heard
+  // X (not me)" -- the same channel as efference but full effective
+  // drive (predicted_input == 0).
+  const int c = word_index(concept);
+  if (c < 0) { say("unknown '%s'\n", concept.c_str()); return; }
+  b.sim.clear_eligibility();
+  b.sim.reset_dynamics();
+  float zero[kAllFeatures] = {0};
+  for (int s = 0; s < 20; ++s) {
+    b.sim.apply_input_pattern(zero, kAllFeatures);
+    b.sim.step();
+  }
+  float pat[kAllFeatures] = {0};
+  pat[kExtFeatures + c] = 1.0f;
+  for (int s = 0; s < 30; ++s) {
+    b.sim.apply_input_pattern(pat, kAllFeatures);
+    inject_internal_noise(b);
+    b.sim.step();
+  }
+  float rates[kClasses];
+  b.sim.read_output(rates, kClasses);
+  const float self_r = b.sim.neurons()[b.selfs[c] - 1].fire_rate_ema;
+  say("[hear] self_%s=%.2f  motor=", concept.c_str(), self_r);
+  for (int i = 0; i < kClasses; ++i) say(" %.2f", rates[i]);
+  say("\n");
+}
+
 void cmd_grow(Brain& b, int dx, int dy, int dz) {
   // Grow the simulated volume by `dx`, `dy`, `dz` voxels per side.
   // Each must be a multiple of region_size (8). Neuron coordinates
@@ -669,6 +735,12 @@ bool process_line(Brain& b, const std::string& raw) {
     std::string w;
     while (is >> w) words.push_back(w);
     cmd_tell(b, words);
+  }
+  else if (cmd == "say") {
+    std::string c; is >> c; cmd_say(b, c);
+  }
+  else if (cmd == "hear") {
+    std::string c; is >> c; cmd_hear(b, c);
   }
   else if (cmd == "correct") cmd_correct(b);
   else if (cmd == "wrong")   cmd_wrong(b);

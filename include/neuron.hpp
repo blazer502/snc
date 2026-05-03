@@ -174,6 +174,15 @@ struct Neuron {
   // `branch_potential` so their compartmental integration is preserved.
   std::vector<float> incoming_queue;
 
+  // Predictive-coding "expected input" for this step. The chemistry
+  // phase computes `effective_input = input_acc - predicted_input`
+  // before integrating, so a perfectly-predicted stimulus produces
+  // zero effective drive (no surprise) while an unpredicted one
+  // produces full drive. Cleared each step. The companion API
+  // `Simulator::apply_prediction_pattern` writes it from the
+  // demo / caller side -- mimics top-down corticothalamic feedback.
+  float predicted_input = 0.0f;
+
   // Number of dendritic branches. Default 1 = legacy single-compartment
   // behaviour. Setting >1 turns this neuron into a multi-compartment cell.
   uint8_t n_branches = 1;

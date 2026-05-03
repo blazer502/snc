@@ -468,6 +468,17 @@ class Simulator {
   // dominate; INTERNAL neurons are untouched.
   void apply_input_pattern(const float* features, int n_features);
 
+  // Predictive-coding companion to `apply_input_pattern`. Sets the
+  // `predicted_input` field of every INPUT neuron whose channel lies
+  // in [0, n_features) to `predictions[channel] * input_drive_strength`.
+  // The chemistry phase will subtract this from `input_acc` before
+  // integration, so a perfectly-predicted stimulus produces zero
+  // effective drive ("not surprising"). Useful for self-voice
+  // prediction: when a motor fires, callers set predictions on the
+  // matching efference channel; the actual efference delivery then
+  // arrives at the predicted level and the residual drive is small.
+  void apply_prediction_pattern(const float* predictions, int n_features);
+
   // Read the mean fire_rate_ema across OUTPUT neurons grouped by channel.
   // `out[i]` will hold the mean rate of OUTPUT neurons with channel == i;
   // channels with no neurons get 0.

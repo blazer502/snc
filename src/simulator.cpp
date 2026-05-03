@@ -589,6 +589,15 @@ void Simulator::apply_input_pattern(const float* features, int n_features) {
   }
 }
 
+void Simulator::apply_prediction_pattern(const float* predictions,
+                                          int n_features) {
+  for (Neuron& nu : neurons_) {
+    if (nu.role != NeuronRole::INPUT) continue;
+    if (nu.channel < 0 || nu.channel >= n_features) continue;
+    nu.predicted_input = predictions[nu.channel] * cfg_.input_drive_strength;
+  }
+}
+
 void Simulator::read_output(float* out, int n_classes) const {
   std::vector<int> count(n_classes, 0);
   for (int i = 0; i < n_classes; ++i) out[i] = 0.0f;
@@ -772,12 +781,19 @@ void Simulator::chemistry_phase() {
     // For INPUT neurons we let the externally-applied input dominate by not
     // adding any leakage from previous potential -- this gives the data
     // signal a clean foothold each step. Internal neurons integrate.
+    // Predictive-coding subtraction: INPUT neurons' effective drive is
+    // input_acc minus predicted_input (clipped at 0 -- predictions
+    // never invert the sign of an actual stimulus). When prediction
+    // matches actual exactly, no surprise -> no firing. Defaults
+    // leave predicted_input at 0 so non-PC demos behave identically.
     if (nu.role == NeuronRole::INPUT) {
-      nu.potential = nu.input_acc;
+      const float effective = nu.input_acc - nu.predicted_input;
+      nu.potential = effective > 0.0f ? effective : 0.0f;
     } else {
       nu.potential = nu.potential * cfg_.potential_decay + nu.input_acc;
     }
     nu.input_acc = 0.0f;
+    nu.predicted_input = 0.0f;
 
     // Refractory period: after a recent spike the soma cannot fire
     // again for `refractory_steps` steps. The accumulated potential
