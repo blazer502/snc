@@ -829,15 +829,24 @@ int Simulator::promote_engram(int output_channel, int top_k_internal,
       const float dy = n.soma.y - region.y;
       const float dz = n.soma.z - region.z;
       const float d2 = dx * dx + dy * dy + dz * dz;
+      float niche;
       // Inside the sphere -> 2x boost. Outside but within 2*radius
       // -> linear falloff to 0.5x. Far outside -> 0.25x.
-      if (d2 <= r2) score *= 2.0f;
+      if (d2 <= r2) niche = 2.0f;
       else if (d2 <= 4.0f * r2) {
         const float t = (d2 - r2) / (3.0f * r2);  // 0..1
-        score *= (2.0f - 1.5f * t);  // 2.0 -> 0.5
+        niche = 2.0f - 1.5f * t;  // 2.0 -> 0.5
       } else {
-        score *= 0.25f;
+        niche = 0.25f;
       }
+      // Pack 25.1: a strongly CREB-biased candidate is anatomically
+      // pre-committed elsewhere (e.g. an A1 cell during a teach
+      // episode) -- the niche penalty would otherwise let an
+      // unbiased noise neuron in the motor column displace it.
+      // Clamp the niche floor to 0.75x for cells with bias > 1.5
+      // so molecular pre-encoding can override spatial bias.
+      if (n.excitability_bias > 1.5f && niche < 0.75f) niche = 0.75f;
+      score *= niche;
     }
     ranked.emplace_back(score, n.id);
   }
