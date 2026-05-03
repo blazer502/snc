@@ -5,6 +5,7 @@ dev_curve.csv
 vocab_voxels.csv
 vocab_neurons.csv
 vocab_synapses.csv
+vocab_position_features.csv
 big_vocab_voxels.csv
 big_vocab_neurons.csv
 big_vocab_synapses.csv

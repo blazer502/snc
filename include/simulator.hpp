@@ -30,9 +30,11 @@
 #include "energy_field.hpp"
 #include "neuron.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <random>
+#include <unordered_map>
 #include <vector>
 
 namespace snc {
@@ -242,6 +244,21 @@ struct StepStats {
   int synapses_formed = 0;
   int synapses_pruned = 0;
   int spikes = 0;
+};
+
+// Position-binned neuron features (cortical-map-style instrumentation).
+// Each populated bin (one `region_size` cube) reports aggregate statistics
+// over the neurons whose soma lives there. Two roles:
+//   - read-only debug / visualisation (cortical map view)
+//   - soft prior for newly-born neurons -- a freshly placed neuron
+//     inherits the local BCM `activity_baseline` so its plasticity is
+//     calibrated to its anatomical neighbourhood, mirroring how cortical
+//     columns in real cortex acquire similar tuning to their neighbours.
+struct PositionFeatures {
+  int n_neurons = 0;
+  float mean_fire_rate_ema = 0.0f;
+  float mean_activity_baseline = 0.0f;
+  float mean_incoming_weight = 0.0f;
 };
 
 // Initial state inspired by late-fetal cortical development.
@@ -517,6 +534,28 @@ class Simulator {
   // the connectome graph. Only structure is written -- no chemistry.
   bool dump_csv(const char* prefix) const;
 
+  // -------- Position-binned features (cortical-map instrumentation) -------
+  // Bin index of a neuron's soma in `cfg.region_size`-voxel units.
+  // Returns {0, 0, 0} for an invalid id.
+  std::array<int, 3> position_bin_for(uint32_t neuron_id) const;
+
+  // Recompute the position-feature map from current neuron state. O(n).
+  // Demos call this before reading or dumping features.
+  void refresh_position_features();
+
+  // Look up aggregate features at a bin (after refresh). Returns nullptr
+  // if the bin has no neurons.
+  const PositionFeatures* position_features_at(int bx, int by, int bz) const;
+
+  // Number of populated bins (after refresh).
+  std::size_t position_bin_count() const noexcept {
+    return position_features_.size();
+  }
+
+  // Dump per-bin features to a CSV at `path`. Useful for visualisation
+  // overlays. Caller is responsible for an up-to-date refresh.
+  bool dump_position_features_csv(const char* path) const;
+
   // Sleep replay / consolidation. Drives the network with internal noise
   // only (no external input), with `boost` multiplied STDP amplitude, for
   // `n_steps` steps. Replays the patterns currently encoded in the
@@ -622,6 +661,15 @@ class Simulator {
   std::vector<uint32_t> owner_;
 
   std::vector<Neuron> neurons_;
+
+  // Position-binned aggregate features (refreshed on demand).
+  std::unordered_map<int64_t, PositionFeatures> position_features_;
+
+  // Initialise a freshly-placed neuron's BCM `activity_baseline` from
+  // the running mean of its bin neighbours. Soft cortical-map prior:
+  // newborn neurons join with the local plasticity calibration, no
+  // hard parameter sharing required.
+  void apply_position_prior(Neuron& nu);
 
   // Per-region astrocyte calcium accumulator. Same coarse spatial
   // grid as the energy field; integrates synaptic-release events,

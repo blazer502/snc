@@ -61,6 +61,7 @@ void Simulator::seed_neurons(int n) {
                     static_cast<int16_t>(z)};
         neu.body.push_back(neu.soma);
         neurons_.push_back(std::move(neu));
+        apply_position_prior(neurons_.back());
         break;
       }
     }
@@ -92,6 +93,7 @@ int Simulator::birth_neurons(int n, const BoundingBox* area) {
                     static_cast<int16_t>(z)};
         neu.body.push_back(neu.soma);
         neurons_.push_back(std::move(neu));
+        apply_position_prior(neurons_.back());
         ++placed;
         break;
       }
@@ -383,6 +385,7 @@ void Simulator::seed_fetal(const FetalSeed& f) {
                             static_cast<int16_t>(nz)});
       }
       neurons_.push_back(std::move(neu));
+      apply_position_prior(neurons_.back());
       return true;
     }
     return false;
@@ -558,6 +561,8 @@ uint32_t Simulator::add_neuron_at(int x, int y, int z) {
               static_cast<int16_t>(z)};
   neu.body.push_back(neu.soma);
   neurons_.push_back(std::move(neu));
+  // Soft cortical-map prior on the just-pushed neuron.
+  apply_position_prior(neurons_.back());
   return static_cast<uint32_t>(neurons_.size());
 }
 
@@ -1533,6 +1538,105 @@ void Simulator::sleep_replay_patterns(
   cfg_.stdp_a_ltp = saved_a_ltp;
   cfg_.stdp_a_ltd = saved_a_ltd;
   cfg_.acetylcholine_level = saved_ach;
+}
+
+namespace {
+
+// Encode a (bx, by, bz) bin triple into a single int64. Each axis takes
+// 24 bits with two's-complement sign-extension on decode, which is
+// plenty for any grid this code base is going to run on.
+constexpr int64_t kBinAxisMask = 0xFFFFFFLL;
+inline int64_t pos_bin_key(int bx, int by, int bz) {
+  return (static_cast<int64_t>(bx) & kBinAxisMask) |
+         ((static_cast<int64_t>(by) & kBinAxisMask) << 24) |
+         ((static_cast<int64_t>(bz) & kBinAxisMask) << 48);
+}
+inline std::array<int, 3> pos_bin_decode(int64_t key) {
+  auto sx = [](int64_t v) {
+    int x = static_cast<int>(v & kBinAxisMask);
+    if (x & 0x800000) x |= ~static_cast<int>(kBinAxisMask);
+    return x;
+  };
+  return {sx(key), sx(key >> 24), sx(key >> 48)};
+}
+
+}  // namespace
+
+std::array<int, 3> Simulator::position_bin_for(uint32_t neuron_id) const {
+  if (neuron_id == 0 || neuron_id > neurons_.size()) return {0, 0, 0};
+  const Neuron& nu = neurons_[neuron_id - 1];
+  const int R = std::max(1, cfg_.region_size);
+  return {nu.soma.x / R, nu.soma.y / R, nu.soma.z / R};
+}
+
+void Simulator::refresh_position_features() {
+  position_features_.clear();
+  const int R = std::max(1, cfg_.region_size);
+  for (const Neuron& nu : neurons_) {
+    const int64_t key = pos_bin_key(nu.soma.x / R, nu.soma.y / R,
+                                     nu.soma.z / R);
+    auto& pf = position_features_[key];
+    pf.n_neurons += 1;
+    pf.mean_fire_rate_ema += nu.fire_rate_ema;
+    pf.mean_activity_baseline += nu.activity_baseline;
+    pf.mean_incoming_weight += nu.incoming_weight_sum;
+  }
+  for (auto& kv : position_features_) {
+    PositionFeatures& pf = kv.second;
+    if (pf.n_neurons > 0) {
+      const float n = static_cast<float>(pf.n_neurons);
+      pf.mean_fire_rate_ema /= n;
+      pf.mean_activity_baseline /= n;
+      pf.mean_incoming_weight /= n;
+    }
+  }
+}
+
+const PositionFeatures* Simulator::position_features_at(
+    int bx, int by, int bz) const {
+  auto it = position_features_.find(pos_bin_key(bx, by, bz));
+  if (it == position_features_.end()) return nullptr;
+  return &it->second;
+}
+
+bool Simulator::dump_position_features_csv(const char* path) const {
+  std::ofstream f(path);
+  if (!f) return false;
+  f << "bin_x,bin_y,bin_z,n_neurons,mean_fire_rate_ema,"
+       "mean_activity_baseline,mean_incoming_weight\n";
+  for (const auto& kv : position_features_) {
+    const auto bin = pos_bin_decode(kv.first);
+    const PositionFeatures& pf = kv.second;
+    f << bin[0] << ',' << bin[1] << ',' << bin[2] << ','
+      << pf.n_neurons << ',' << pf.mean_fire_rate_ema << ','
+      << pf.mean_activity_baseline << ',' << pf.mean_incoming_weight
+      << '\n';
+  }
+  return f.good();
+}
+
+void Simulator::apply_position_prior(Neuron& nu) {
+  // Soft cortical-map prior: a newborn neuron inherits the running
+  // mean BCM activity_baseline of its bin neighbours. Linear scan is
+  // O(n_neurons); fine for the population sizes the demos run with.
+  // No-op when the bin is empty (the neuron keeps its default baseline).
+  const int R = std::max(1, cfg_.region_size);
+  const int bx = nu.soma.x / R;
+  const int by = nu.soma.y / R;
+  const int bz = nu.soma.z / R;
+  int n = 0;
+  float sum_baseline = 0.0f;
+  for (const Neuron& other : neurons_) {
+    if (other.id == nu.id) continue;
+    if (other.soma.x / R != bx) continue;
+    if (other.soma.y / R != by) continue;
+    if (other.soma.z / R != bz) continue;
+    ++n;
+    sum_baseline += other.activity_baseline;
+  }
+  if (n > 0) {
+    nu.activity_baseline = sum_baseline / static_cast<float>(n);
+  }
 }
 
 bool Simulator::dump_csv(const char* prefix) const {

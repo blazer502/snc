@@ -554,7 +554,12 @@ int main(int argc, char** argv) {
 
   sim.save_state("vocab_brain.snc");
   sim.dump_csv("vocab");
-  std::printf("[sleep] saved (.snc + vocab_voxels/neurons/synapses.csv)\n");
+  // Cortical-map view: positional features per region_size bin.
+  sim.refresh_position_features();
+  sim.dump_position_features_csv("vocab_position_features.csv");
+  std::printf("[sleep] saved (.snc + vocab_voxels/neurons/synapses/"
+              "position_features.csv); %zu populated bins\n",
+              sim.position_bin_count());
 
   return 0;
 }
