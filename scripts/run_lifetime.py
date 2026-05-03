@@ -146,20 +146,24 @@ def main(argv):
               f"show={m['show_correct']}/{m['show_total']}  "
               f"acc={m['show_acc']*100:5.1f}%")
 
-    # Save CSV.
+    # Save CSV. Per-word columns hold the literal `said` value for
+    # each probe (or `?` if that word wasn't shown this session); a
+    # word column equals the word's name when the brain got it right.
     csv_path = Path("lifetime_trajectory.csv")
     with csv_path.open("w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["session", "stage", "step", "neurons", "synapses",
                      "structural_blobs", "bins",
                      "grid_x", "grid_y", "grid_z",
-                     "show_correct", "show_total", "show_acc"])
+                     "show_correct", "show_total", "show_acc",
+                     *ALL_WORDS])
         for m in metrics:
             w.writerow([m["session"], m["stage"], m["step"], m["neurons"],
                          m["synapses"], m["structural_blobs"], m["bins"],
                          m["grid_x"], m["grid_y"], m["grid_z"],
                          m["show_correct"], m["show_total"],
-                         f"{m['show_acc']:.4f}"])
+                         f"{m['show_acc']:.4f}",
+                         *(m["word_results"][w_] for w_ in ALL_WORDS)])
     print(f"wrote {csv_path}")
 
     # Plot summary.
@@ -202,6 +206,35 @@ def main(argv):
     out = Path("lifetime_summary.png")
     plt.savefig(out, dpi=110, bbox_inches="tight")
     print(f"wrote {out}")
+
+    # Per-word retention heatmap. Rows = words in teaching order,
+    # columns = sessions. Cell value: 1 = correct, 0 = wrong, NaN = not
+    # probed this session (so it shows blank in the imshow).
+    import numpy as np
+    grid = np.full((len(ALL_WORDS), len(metrics)), np.nan)
+    for j, m in enumerate(metrics):
+        for i, word in enumerate(ALL_WORDS):
+            said = m["word_results"][word]
+            if said == "?":
+                continue
+            grid[i, j] = 1.0 if said == word else 0.0
+    fig2, ax = plt.subplots(figsize=(max(8, len(metrics) * 0.4),
+                                      0.4 * len(ALL_WORDS) + 1.5))
+    cmap = plt.cm.RdYlGn
+    cmap.set_bad(color="#eeeeee")
+    im = ax.imshow(np.ma.masked_invalid(grid), aspect="auto",
+                   cmap=cmap, vmin=0, vmax=1, interpolation="nearest")
+    ax.set_yticks(range(len(ALL_WORDS)))
+    ax.set_yticklabels(ALL_WORDS)
+    ax.set_xticks(range(len(metrics)))
+    ax.set_xticklabels([str(m["session"]) for m in metrics])
+    ax.set_xlabel("session"); ax.set_ylabel("word")
+    ax.set_title("Per-word retention "
+                 "(green=correct, red=wrong, grey=not probed)")
+    plt.tight_layout()
+    out2 = Path("lifetime_per_word.png")
+    plt.savefig(out2, dpi=110, bbox_inches="tight")
+    print(f"wrote {out2}")
 
 
 if __name__ == "__main__":

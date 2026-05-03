@@ -828,14 +828,16 @@ void cmd_status(Brain& b) {
   say("[status] step=%d  neurons=%zu  synapses=%zu  "
               "structural-blobs=%d  bins=%zu  "
               "shows=%d/%d  teaches=%d/%d  "
-              "grid=%dx%dx%d\n",
+              "grid=%dx%dx%d  occ=%.3f  perm=%zu\n",
               b.sim.current_step(), b.sim.neuron_count(),
               b.sim.total_synapses(),
               b.sim.count_structural_neurons(),
               b.sim.position_bin_count(),
               b.correct_shows, b.total_shows,
               b.correct_teaches, b.total_teaches,
-              b.sim.grid().X(), b.sim.grid().Y(), b.sim.grid().Z());
+              b.sim.grid().X(), b.sim.grid().Y(), b.sim.grid().Z(),
+              b.sim.occupancy_fraction(),
+              b.sim.permanent_synapse_count());
 }
 
 bool process_line(Brain& b, const std::string& raw) {
@@ -980,6 +982,44 @@ int main(int argc, char** argv) {
       rebuild_index(b);
     } else {
       say("[stage] session %d (%s)\n", meta.session_count, stage.name);
+    }
+    // Demand-driven growth: even within a developmental stage, if
+    // the substrate is filling up (occupancy >= 0.04) expand by one
+    // region_size on each side. The threshold is calibrated to the
+    // sparse coding regime this simulator runs in -- the cortical
+    // analogue is "pyramidal cell density approaches local
+    // saturation"; the absolute number is small because synapses
+    // and somas occupy individual voxels in a 3D matrix that is
+    // mostly empty by design (volume exclusion + extracellular
+    // space). Capped at the preadolescent ceiling (128x128x96)
+    // regardless of session count -- biological volume does not
+    // grow past adolescence.
+    {
+      const auto& gd = b.sim.grid();
+      const float occ = b.sim.occupancy_fraction();
+      const int ceil_x = kStages[kNumStages - 1].x;
+      const int ceil_y = kStages[kNumStages - 1].y;
+      const int ceil_z = kStages[kNumStages - 1].z;
+      const int gx = gd.X();
+      const int gy = gd.Y();
+      const int gz = gd.Z();
+      const bool below_ceiling =
+          gx < ceil_x || gy < ceil_y || gz < ceil_z;
+      if (occ >= 0.10f && below_ceiling) {
+        // Step +8 on each side per axis, only on axes still under
+        // the ceiling. region_size = 8.
+        const int ddx = (gx + 16 <= ceil_x) ? 8 : 0;
+        const int ddy = (gy + 16 <= ceil_y) ? 8 : 0;
+        const int ddz = (gz + 16 <= ceil_z) ? 8 : 0;
+        if (ddx > 0 || ddy > 0 || ddz > 0) {
+          say("[grow:demand] occ=%.2f -> +%dx%dx%d on each side "
+              "(now %dx%dx%d)\n",
+              occ, ddx, ddy, ddz,
+              gx + 2 * ddx, gy + 2 * ddy, gz + 2 * ddz);
+          b.sim.grow_volume(ddx, ddy, ddz);
+          rebuild_index(b);
+        }
+      }
     }
     // Lifelong neurogenesis: stage-scaled batch of newborn VZ neurons.
     const int newborn = b.sim.birth_neurons(stage.newborns_per_session);

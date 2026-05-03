@@ -786,6 +786,21 @@ std::size_t Simulator::permanent_synapse_count() const noexcept {
   return n;
 }
 
+float Simulator::occupancy_fraction() const noexcept {
+  const std::size_t vol = grid_.volume();
+  if (vol == 0) return 0.0f;
+  std::size_t occupied = 0;
+  for (int z = 0; z < grid_.Z(); ++z) {
+    for (int y = 0; y < grid_.Y(); ++y) {
+      for (int x = 0; x < grid_.X(); ++x) {
+        const auto c = grid_.get(x, y, z);
+        if (c == BrainGrid::NEURON || c == BrainGrid::SYNAPSE) ++occupied;
+      }
+    }
+  }
+  return static_cast<float>(occupied) / static_cast<float>(vol);
+}
+
 void Simulator::integrate_incoming_phase() {
   // Stage 1->2 boundary: synaptic inputs that scheduler_dispatch_phase
   // accumulated into per-branch dendritic potentials get folded into the

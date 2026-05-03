@@ -18,5 +18,6 @@ big_vocab_neurons.csv
 big_vocab_synapses.csv
 lifetime_trajectory.csv
 lifetime_summary.png
+lifetime_per_word.png
 lifetime_brain.snc
 lifetime_brain.snc.meta

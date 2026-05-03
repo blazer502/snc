@@ -631,6 +631,13 @@ class Simulator {
   // for engram growth across a curriculum.
   std::size_t permanent_synapse_count() const noexcept;
 
+  // Fraction of the structural grid currently occupied by tissue
+  // (NEURON or SYNAPSE cells). Used as a demand-driven growth signal:
+  // when occupancy crosses a threshold the demo can call
+  // `grow_volume` to expand the substrate before sprouting starts to
+  // fail from crowding.
+  float occupancy_fraction() const noexcept;
+
   // Run one full simulation step.
   void step();
 
