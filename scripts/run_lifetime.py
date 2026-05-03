@@ -112,8 +112,13 @@ def session_commands(session: int, brain_path: Path) -> list:
                           f"teach {new_word}", "correct"])
         taught = ALL_WORDS[:session]
     else:
-        # Pure review session.
-        cmds.append("babble 5")
+        # Pure review session: skip babble. Random-motor firing during
+        # the no-new-teaching window adds noise that competes with
+        # engram readout on subsequent shows; explicit imagery
+        # rehearsal also hurt in measurement (each imagine triggers
+        # sprouting / synaptogenesis that dilutes the engram readout).
+        # The brain consolidates better when given silent space +
+        # probes only.
         taught = ALL_WORDS
 
     # Probe: show every taught word.
