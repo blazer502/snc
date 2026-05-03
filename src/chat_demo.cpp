@@ -86,13 +86,51 @@ void log_input(const std::string& line) {
 // (more/stop).
 constexpr int kClasses = 12;
 constexpr int kFeatPerClass = 4;
-constexpr int kExtFeatures = kClasses * kFeatPerClass;       // 48
-constexpr int kEffFeatures = kClasses;                       // 12
-constexpr int kAllFeatures = kExtFeatures + kEffFeatures;    // 60
+constexpr int kLabelFeatures = kClasses * kFeatPerClass;     // 48
+constexpr int kSelfFeatures = kClasses;                      // 12
+constexpr int kImgRows = 4;
+constexpr int kImgCols = 4;
+constexpr int kImageFeatures = kImgRows * kImgCols;          // 16
+
+// Channel layout (input neurons):
+//   [0 .. 47]  label sensory features        (kLabelFeatures = 48)
+//   [48 .. 59] efference / self-perception   (kSelfFeatures  = 12)
+//   [60 .. 75] retinotopic image pixels      (kImageFeatures = 16)
+constexpr int kImgChannelStart = kLabelFeatures + kSelfFeatures;  // 60
+constexpr int kExtFeatures = kLabelFeatures;                  // 48
+constexpr int kEffFeatures = kSelfFeatures;                   // 12
+constexpr int kAllFeatures =
+    kLabelFeatures + kSelfFeatures + kImageFeatures;          // 76
 
 const char* kWords[kClasses] = {
     "mom", "dad", "baby", "ball", "dog", "cat",
     "hi", "bye", "yes", "no", "more", "stop"
+};
+
+// Hand-designed 4x4 retinal patterns -- one per concept. Each
+// pattern lights up 4 pixels; some pixels are shared between
+// concepts on purpose (visual generalisation should sit on top of
+// labels). Indexed (row, col) -> pixel = row*kImgCols + col.
+//
+//   mom : top-left 2x2     dad : top-right 2x2
+//   baby: top centre       ball: centre 2x2
+//   dog : bot-left 2x2     cat : bot-right 2x2
+//   hi  : left edge        bye : right edge
+//   yes : top edge         no  : bottom edge
+//   more: 4 corners        stop: main diagonal
+constexpr int kImageBits[kClasses][4] = {
+    /* mom  */ {0,  1,  4,  5},
+    /* dad  */ {2,  3,  6,  7},
+    /* baby */ {1,  2,  5,  6},
+    /* ball */ {5,  6,  9, 10},
+    /* dog  */ {8,  9, 12, 13},
+    /* cat  */ {10, 11, 14, 15},
+    /* hi   */ {0,  4,  8, 12},
+    /* bye  */ {3,  7, 11, 15},
+    /* yes  */ {0,  1,  2,  3},
+    /* no   */ {12, 13, 14, 15},
+    /* more */ {0,  3, 12, 15},
+    /* stop */ {0,  5, 10, 15},
 };
 
 int word_index(const std::string& w) {
@@ -172,6 +210,7 @@ struct Brain {
   std::vector<uint32_t> motors;
   std::vector<uint32_t> selfs;
   std::vector<uint32_t> inhibitors;
+  std::vector<uint32_t> image_in;  // 16 retinotopic pixel input neurons
   std::vector<bool> skip_noise;
   std::mt19937 rng;
   // Last episode bookkeeping (for `correct` / `wrong`).
@@ -241,15 +280,20 @@ void save_meta(const std::string& brain_path, const ChatMeta& m) {
 void rebuild_index(Brain& b) {
   b.motors.assign(kClasses, 0);
   b.selfs.assign(kClasses, 0);
-  b.ext_in.assign(kExtFeatures, 0);
+  b.ext_in.assign(kLabelFeatures, 0);
+  b.image_in.assign(kImageFeatures, 0);
   b.inhibitors.clear();
   for (const auto& nu : b.sim.neurons()) {
     if (nu.role == snc::NeuronRole::INPUT) {
-      if (nu.channel >= 0 && nu.channel < kExtFeatures) {
-        b.ext_in[nu.channel] = nu.id;
-      } else if (nu.channel >= kExtFeatures &&
-                 nu.channel < kAllFeatures) {
-        b.selfs[nu.channel - kExtFeatures] = nu.id;
+      const int ch = nu.channel;
+      if (ch >= 0 && ch < kLabelFeatures) {
+        b.ext_in[ch] = nu.id;
+      } else if (ch >= kLabelFeatures &&
+                 ch < kLabelFeatures + kSelfFeatures) {
+        b.selfs[ch - kLabelFeatures] = nu.id;
+      } else if (ch >= kImgChannelStart &&
+                 ch < kImgChannelStart + kImageFeatures) {
+        b.image_in[ch - kImgChannelStart] = nu.id;
       }
     } else if (nu.role == snc::NeuronRole::OUTPUT) {
       if (nu.channel >= 0 && nu.channel < kClasses) {
@@ -261,9 +305,10 @@ void rebuild_index(Brain& b) {
   // (the 12 lateral PV inh cells plus the ~20% GABAergic fraction
   // randomize_polarity assigned in the bulk).
   b.skip_noise.assign(b.sim.neuron_count() + 1, false);
-  for (uint32_t id : b.ext_in)  if (id < b.skip_noise.size()) b.skip_noise[id] = true;
-  for (uint32_t id : b.selfs)   if (id < b.skip_noise.size()) b.skip_noise[id] = true;
-  for (uint32_t id : b.motors)  if (id < b.skip_noise.size()) b.skip_noise[id] = true;
+  for (uint32_t id : b.ext_in)   if (id < b.skip_noise.size()) b.skip_noise[id] = true;
+  for (uint32_t id : b.selfs)    if (id < b.skip_noise.size()) b.skip_noise[id] = true;
+  for (uint32_t id : b.motors)   if (id < b.skip_noise.size()) b.skip_noise[id] = true;
+  for (uint32_t id : b.image_in) if (id < b.skip_noise.size()) b.skip_noise[id] = true;
   for (const auto& nu : b.sim.neurons()) {
     const bool inh = nu.polarity != snc::NeuronPolarity::EXCITATORY;
     if (inh && nu.id < b.skip_noise.size())
@@ -294,8 +339,9 @@ void build_anatomy(Brain& b) {
   seed.aversive_nucleus_neurons = 6;
   sim.seed_fetal(seed);
 
-  // External sensory inputs: 48 channels = 12 rows of 4 columns.
-  b.ext_in.reserve(kExtFeatures);
+  // External sensory (label) inputs: 48 channels = 12 rows of 4
+  // columns at the cortical floor.
+  b.ext_in.reserve(kLabelFeatures);
   for (int c = 0; c < kClasses; ++c) {
     for (int f = 0; f < kFeatPerClass; ++f) {
       const int channel = c * kFeatPerClass + f;
@@ -310,6 +356,28 @@ void build_anatomy(Brain& b) {
       sim.set_role(id, snc::NeuronRole::INPUT, channel);
       sim.set_polarity(id, snc::NeuronPolarity::EXCITATORY);
       b.ext_in.push_back(id);
+    }
+  }
+
+  // Retinotopic image inputs: 4x4 grid of "ganglion-cell" neurons
+  // placed on a separate cortical patch (z=4). Channels assigned in
+  // row-major order starting at kImgChannelStart so the existing
+  // label and self-perception channels stay where they are.
+  b.image_in.reserve(kImageFeatures);
+  for (int r = 0; r < kImgRows; ++r) {
+    for (int c = 0; c < kImgCols; ++c) {
+      const int channel = kImgChannelStart + r * kImgCols + c;
+      const int x = 32 + c * 5;     // separate from label cluster
+      const int y = 4 + r * 5;
+      const uint32_t id = sim.add_neuron_at(x, y, 4);
+      if (!id) {
+        std::fprintf(stderr, "image input pixel (%d,%d) failed at (%d,%d,4)\n",
+                     r, c, x, y);
+        std::exit(1);
+      }
+      sim.set_role(id, snc::NeuronRole::INPUT, channel);
+      sim.set_polarity(id, snc::NeuronPolarity::EXCITATORY);
+      b.image_in.push_back(id);
     }
   }
 
@@ -354,11 +422,22 @@ void build_anatomy(Brain& b) {
     b.inhibitors.push_back(inh);
   }
 
-  // Innate priors / efference / lateral inhibition (all permanent).
+  // Innate label priors / efference / lateral inhibition (permanent).
   for (int c = 0; c < kClasses; ++c) {
     for (int f = 0; f < kFeatPerClass; ++f) {
       sim.install_synapse(b.ext_in[c * kFeatPerClass + f],
                           b.motors[c], 0.55f, 4, 0, 1.0f);
+    }
+  }
+  // Innate visual priors: each concept's 4 image pixels also wire to
+  // its motor on branch 0. With 4 priors at 0.55 each, the dendritic
+  // spike threshold (0.8) is comfortably crossed when all four pixels
+  // of a concept's image are active. Same labelled-line treatment as
+  // the label priors -- permanent (won't get pruned).
+  for (int c = 0; c < kClasses; ++c) {
+    for (int p = 0; p < 4; ++p) {
+      const int pixel = kImageBits[c][p];
+      sim.install_synapse(b.image_in[pixel], b.motors[c], 0.55f, 4, 0, 1.0f);
     }
   }
   for (int c = 0; c < kClasses; ++c) {
@@ -411,6 +490,7 @@ void cmd_help() {
       "                             (self-channel suppressed: 'I said it')\n"
       "  hear <concept>             external drive on self-channel\n"
       "                             (full activation: 'I heard it')\n"
+      "  see <concept>              4x4 retinal image input -> motor\n"
       "  correct                    last response was right; reward\n"
       "  wrong                      last response was wrong; aversive\n"
       "  sleep [<sws> <rem>]        SWS+REM consolidation cycle\n"
@@ -542,6 +622,39 @@ void cmd_wrong(Brain& b) {
   for (int s = 0; s < 4; ++s) b.sim.step();
   say("[wrong] -reward + aversive applied; expected %s\n",
               kWords[b.last_target]);
+}
+
+void cmd_see(Brain& b, const std::string& concept) {
+  // Visual recognition: drive the 4-pixel canonical image of `concept`
+  // on the retinotopic input channels. The visual priors hand-installed
+  // at build time take this directly to the matching motor, so a
+  // freshly-grown brain can already classify by sight without label
+  // training. Future: real preprocessed images instead of canonical
+  // patterns.
+  const int c = word_index(concept);
+  if (c < 0) { say("unknown '%s'\n", concept.c_str()); return; }
+  b.sim.clear_eligibility();
+  b.sim.reset_dynamics();
+  float zero[kAllFeatures] = {0};
+  for (int s = 0; s < 20; ++s) {
+    b.sim.apply_input_pattern(zero, kAllFeatures);
+    b.sim.step();
+  }
+  float pat[kAllFeatures] = {0};
+  for (int p = 0; p < 4; ++p) {
+    pat[kImgChannelStart + kImageBits[c][p]] = 1.0f;
+  }
+  for (int s = 0; s < 30; ++s) {
+    b.sim.apply_input_pattern(pat, kAllFeatures);
+    inject_internal_noise(b);
+    b.sim.step();
+  }
+  float rates[kClasses];
+  b.sim.read_output(rates, kClasses);
+  const char* said = utter(rates);
+  say("[see] image=%s  said=%s  rates=", concept.c_str(), said);
+  for (int i = 0; i < kClasses; ++i) say(" %s:%.2f", kWords[i], rates[i]);
+  say("\n");
 }
 
 void cmd_say(Brain& b, const std::string& concept) {
@@ -741,6 +854,9 @@ bool process_line(Brain& b, const std::string& raw) {
   }
   else if (cmd == "hear") {
     std::string c; is >> c; cmd_hear(b, c);
+  }
+  else if (cmd == "see") {
+    std::string c; is >> c; cmd_see(b, c);
   }
   else if (cmd == "correct") cmd_correct(b);
   else if (cmd == "wrong")   cmd_wrong(b);
