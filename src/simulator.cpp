@@ -681,6 +681,24 @@ void Simulator::clear_eligibility() {
   }
 }
 
+void Simulator::reset_dynamics() {
+  for (Neuron& nu : neurons_) {
+    nu.potential = 0.0f;
+    nu.input_acc = 0.0f;
+    nu.fire_rate_ema = 0.0f;
+    nu.fired_this_step = false;
+    // Push last_fire_step far enough in the past that any refractory
+    // window the demo configures is already past.
+    nu.last_fire_step = step_ - 1000000;
+    nu.incoming_queue.clear();
+    std::fill(nu.branch_potential.begin(), nu.branch_potential.end(), 0.0f);
+    nu.ltp_received_this_step = 0.0f;
+    for (auto& syn : nu.outgoing) {
+      syn.transit.clear();
+    }
+  }
+}
+
 void Simulator::integrate_incoming_phase() {
   // Stage 1->2 boundary: synaptic inputs that scheduler_dispatch_phase
   // accumulated into per-branch dendritic potentials get folded into the
@@ -753,7 +771,17 @@ void Simulator::chemistry_phase() {
     }
     nu.input_acc = 0.0f;
 
-    if (nu.potential >= cfg_.fire_threshold) {
+    // Refractory period: after a recent spike the soma cannot fire
+    // again for `refractory_steps` steps. The accumulated potential
+    // is reset to 0 so it doesn't get to ride out the window. With
+    // refractory_steps == 0 (default) this is a no-op.
+    const bool in_refractory =
+        cfg_.refractory_steps > 0 &&
+        (step_ - nu.last_fire_step) < cfg_.refractory_steps;
+    if (in_refractory) {
+      nu.potential = 0.0f;
+    }
+    if (nu.potential >= cfg_.fire_threshold && !in_refractory) {
       nu.fired_this_step = true;
       nu.last_fire_step = step_;
       nu.potential = 0.0f;
@@ -969,6 +997,9 @@ void Simulator::scheduler_dispatch_phase() {
   // pushes the magnitude into the post neuron's incoming queue (queue 1
   // for the next cycle), updates synapse use accounting and pays the
   // synapse-use energy cost from the synapse's local region.
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  const bool stochastic =
+      cfg_.release_probability > 0.0f && cfg_.release_probability < 1.0f;
   for (Neuron& pre : neurons_) {
     for (auto& syn : pre.outgoing) {
       if (syn.transit.empty()) continue;
@@ -980,6 +1011,19 @@ void Simulator::scheduler_dispatch_phase() {
         if (read->delay_remaining > 0) {
           if (write != read) *write = *read;
           ++write;
+          continue;
+        }
+        // Stochastic vesicle release: a real synapse fails to release
+        // its vesicle with probability ~50% per spike. The dropped
+        // packet still counts as "consumed" for scheduling purposes
+        // but never reaches the post -- baseline noise that helps the
+        // network escape deterministic attractors.
+        const bool released =
+            !stochastic || u(rng_) < cfg_.release_probability;
+        if (!released) {
+          // Drop without delivering. Bookkeeping still advances so the
+          // synapse doesn't appear "stuck". Energy cost is *not* paid
+          // because no vesicle was actually released.
           continue;
         }
         if (syn.target_neuron > 0 && syn.target_neuron <= neurons_.size()) {

@@ -167,6 +167,21 @@ struct SimConfig {
   // `aversive_amplification * reward_lr * intensity * eligibility`.
   float aversive_amplification = 2.0f;
 
+  // Refractory period (in steps). After firing, a neuron's potential is
+  // forced to 0 for `refractory_steps` steps -- it cannot fire again
+  // during this window even if its input would otherwise drive it. Real
+  // cortical neurons have ~3-5ms absolute refractory + ~10ms relative;
+  // mapped to our coarser step units this typically corresponds to a
+  // few-step block. Default 0 keeps legacy demos identical.
+  int refractory_steps = 0;
+
+  // Probability that a spike actually crosses each synapse on dispatch.
+  // Real cortical synapses release neurotransmitter with ~0.2-0.6
+  // probability per spike; the resulting baseline noise is essential for
+  // breaking the deterministic attractors that pure spike+threshold
+  // models tend to fall into. 1.0 = legacy deterministic transmission.
+  float release_probability = 1.0f;
+
   // Dendritic-compartment integration. A neuron with `n_branches > 1`
   // sums incoming spikes per branch in `branch_potential`. integrate
   // converts each branch's potential into a soma contribution:
@@ -453,6 +468,16 @@ class Simulator {
   // Reset every synapse's eligibility trace to zero (between independent
   // trials in a training loop).
   void clear_eligibility();
+
+  // Reset all transient dynamics so the next step starts from a fresh
+  // chemistry baseline: per-neuron membrane potential, input
+  // accumulator, fire-rate EMA, dendritic branch potentials and
+  // incoming queue, plus every synapse's transit packets. Structural
+  // weights, eligibility traces, consolidation tags and the structural
+  // grid are *not* touched -- only the activity state. Useful between
+  // independent probe scenes to avoid leak-over from the previous
+  // scene's saturation.
+  void reset_dynamics();
 
   // -------- Sleep: persist / restore the entire brain state --------------
   //

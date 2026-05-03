@@ -122,6 +122,14 @@ int main(int argc, char** argv) {
   cfg.stdp_tau = 6.0f;
   cfg.spine_retraction_floor = 0.008f;
   cfg.prune_inactive_steps = 4000;
+
+  // New stability mechanisms exercised here: a small refractory period
+  // (~3 steps) prevents any motor neuron from firing every single step
+  // and forming a self-sustaining attractor; mild stochastic vesicle
+  // release adds biological baseline noise that further breaks
+  // deterministic loops.
+  cfg.refractory_steps = 3;
+  cfg.release_probability = 0.85f;
   cfg.weight_potentiation = 0.0f;
   cfg.homeostatic_rate = 0.0f;
   cfg.heterosynaptic_damp = 0.0f;
@@ -500,11 +508,13 @@ int main(int argc, char** argv) {
   std::printf("shown  said   rates(mom/dad/ball/dog)\n");
   int probe_correct = 0;
   for (const Scene& scene : scenes) {
-    // Long silent gap so all fire-rate EMAs decay to near zero before
-    // we measure the next scene -- especially important since previous
-    // scenes may have saturated some motor outputs to 1.0.
+    // Active reset between scenes: zero every neuron's transient state
+    // so the previous scene's saturated activity doesn't leak through
+    // a self-sustaining attractor. Structural weights / tags / the
+    // grid are preserved -- only the chemistry is reset.
+    sim.reset_dynamics();
     float zero[kAllFeatures] = {0};
-    for (int s = 0; s < 120; ++s) {
+    for (int s = 0; s < 30; ++s) {
       sim.apply_input_pattern(zero, kAllFeatures);
       sim.step();
     }
