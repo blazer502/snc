@@ -182,6 +182,16 @@ struct SimConfig {
   // models tend to fall into. 1.0 = legacy deterministic transmission.
   float release_probability = 1.0f;
 
+  // Short-term plasticity (Tsodyks-Markram style). Each successful
+  // release depletes the per-synapse vesicle pool by `release_depression`
+  // (fraction of full pool); per step the pool recovers by
+  // `release_recovery`. The effective release magnitude scales with the
+  // current pool fraction, producing short-term depression on bursts
+  // and recovery during quiescence. Default 0/0 keeps `vesicle_state`
+  // pinned at 1.0 (no STP) for legacy demos.
+  float release_depression = 0.0f;
+  float release_recovery   = 0.0f;
+
   // Dendritic-compartment integration. A neuron with `n_branches > 1`
   // sums incoming spikes per branch in `branch_potential`. integrate
   // converts each branch's potential into a soma contribution:

@@ -1000,6 +1000,21 @@ void Simulator::scheduler_dispatch_phase() {
   std::uniform_real_distribution<float> u(0.0f, 1.0f);
   const bool stochastic =
       cfg_.release_probability > 0.0f && cfg_.release_probability < 1.0f;
+  const bool stp_active =
+      cfg_.release_depression > 0.0f || cfg_.release_recovery > 0.0f;
+
+  // Short-term plasticity recovery: every step, every synapse refills
+  // a fraction `release_recovery` of its vesicle pool, capped at 1.0.
+  // Depression is applied per release in the delivery loop below.
+  if (cfg_.release_recovery > 0.0f) {
+    for (Neuron& pre : neurons_) {
+      for (auto& syn : pre.outgoing) {
+        syn.vesicle_state = std::min(
+            1.0f, syn.vesicle_state + cfg_.release_recovery);
+      }
+    }
+  }
+
   for (Neuron& pre : neurons_) {
     for (auto& syn : pre.outgoing) {
       if (syn.transit.empty()) continue;
@@ -1037,7 +1052,17 @@ void Simulator::scheduler_dispatch_phase() {
           }
           uint8_t b = syn.branch;
           if (b >= post.n_branches) b = 0;
-          post.branch_potential[b] += read->magnitude;
+          // Short-term-plasticity: scale magnitude by vesicle pool
+          // fraction, then deplete the pool by `release_depression`.
+          // No-op if STP is disabled (default).
+          const float effective =
+              stp_active ? read->magnitude * syn.vesicle_state
+                         : read->magnitude;
+          post.branch_potential[b] += effective;
+          if (cfg_.release_depression > 0.0f) {
+            syn.vesicle_state -= cfg_.release_depression;
+            if (syn.vesicle_state < 0.0f) syn.vesicle_state = 0.0f;
+          }
 
           // LTD half of STDP: if the post fired *before* this delivery
           // arrived, the spike is too late to be causal. The same NMDA /
@@ -1577,9 +1602,9 @@ void rvec(std::ifstream& f, std::vector<T>& v) {
 bool Simulator::save_state(const char* path) const {
   std::ofstream f(path, std::ios::binary);
   if (!f) return false;
-  const char magic[4] = {'S', 'N', 'C', '4'};
+  const char magic[4] = {'S', 'N', 'C', '5'};
   f.write(magic, 4);
-  uint32_t version = 4;
+  uint32_t version = 5;
   wpod(f, version);
   wpod(f, cfg_);
   wpod(f, step_);
@@ -1622,6 +1647,7 @@ bool Simulator::save_state(const char* path) const {
       wpod(f, syn.consolidation_tag);
       wpod(f, syn.conduction_delay);
       wpod(f, syn.branch);
+      wpod(f, syn.vesicle_state);
       wpod(f, syn.delivered_count);
       wpod(f, syn.caused_fire_count);
       wpod(f, syn.last_delivery_step);
@@ -1636,10 +1662,10 @@ bool Simulator::load_state(const char* path) {
   if (!f) return false;
   char magic[4];
   f.read(magic, 4);
-  if (std::memcmp(magic, "SNC4", 4) != 0) return false;
+  if (std::memcmp(magic, "SNC5", 4) != 0) return false;
   uint32_t version;
   rpod(f, version);
-  if (version != 4) return false;
+  if (version != 5) return false;
 
   rpod(f, cfg_);
   rpod(f, step_);
@@ -1691,6 +1717,7 @@ bool Simulator::load_state(const char* path) {
       rpod(f, syn.consolidation_tag);
       rpod(f, syn.conduction_delay);
       rpod(f, syn.branch);
+      rpod(f, syn.vesicle_state);
       rpod(f, syn.delivered_count);
       rpod(f, syn.caused_fire_count);
       rpod(f, syn.last_delivery_step);

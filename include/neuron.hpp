@@ -58,6 +58,17 @@ struct SynapseEdge {
   // weight; permanence affects only physical removal.
   bool permanent = false;
 
+  // Short-term plasticity: fraction of the vesicle pool currently
+  // available for release. Each successful release depletes the pool
+  // by `cfg.release_depression`; per step, a `cfg.release_recovery`
+  // fraction is restored, capped at 1.0. The effective release
+  // magnitude is multiplied by `vesicle_state`, producing the
+  // characteristic short-term depression observed at most cortical
+  // synapses (Markram & Tsodyks). Defaults (0/0) disable the dynamic
+  // and keep `vesicle_state == 1.0` indefinitely so legacy demos
+  // are unchanged.
+  float vesicle_state = 1.0f;
+
   // Conduction delay in simulation steps -- equal to the Manhattan distance
   // from the pre-synaptic soma to the synaptic voxel at formation time.
   // Captures the fact that an action potential needs time to propagate
