@@ -1572,6 +1572,18 @@ std::array<int, 3> Simulator::position_bin_for(uint32_t neuron_id) const {
 void Simulator::refresh_position_features() {
   position_features_.clear();
   const int R = std::max(1, cfg_.region_size);
+
+  // Determine the highest INPUT channel in use so tuning_curve is
+  // sized consistently across bins.
+  int max_input_channel = -1;
+  for (const Neuron& nu : neurons_) {
+    if (nu.role == NeuronRole::INPUT && nu.channel > max_input_channel) {
+      max_input_channel = nu.channel;
+    }
+  }
+  const int n_channels =
+      (max_input_channel >= 0) ? max_input_channel + 1 : 0;
+
   for (const Neuron& nu : neurons_) {
     const int64_t key = pos_bin_key(nu.soma.x / R, nu.soma.y / R,
                                      nu.soma.z / R);
@@ -1580,7 +1592,38 @@ void Simulator::refresh_position_features() {
     pf.mean_fire_rate_ema += nu.fire_rate_ema;
     pf.mean_activity_baseline += nu.activity_baseline;
     pf.mean_incoming_weight += nu.incoming_weight_sum;
+    if (n_channels > 0 &&
+        pf.tuning_curve.size() < static_cast<std::size_t>(n_channels)) {
+      pf.tuning_curve.resize(n_channels, 0.0f);
+    }
   }
+
+  // Walk every INPUT neuron's outgoing synapses and add the synapse
+  // weight to the target bin's tuning_curve entry for that channel.
+  // This snapshots the connectome's labelled-line mapping per bin --
+  // bins primarily wired from channel C will report C as their
+  // dominant tuning. O(neurons * avg_outgoing).
+  if (n_channels > 0) {
+    for (const Neuron& pre : neurons_) {
+      if (pre.role != NeuronRole::INPUT) continue;
+      if (pre.channel < 0 || pre.channel >= n_channels) continue;
+      for (const SynapseEdge& syn : pre.outgoing) {
+        if (syn.target_neuron == 0 ||
+            syn.target_neuron > neurons_.size()) continue;
+        const Neuron& post = neurons_[syn.target_neuron - 1];
+        const int64_t key = pos_bin_key(
+            post.soma.x / R, post.soma.y / R, post.soma.z / R);
+        auto it = position_features_.find(key);
+        if (it == position_features_.end()) continue;
+        if (it->second.tuning_curve.size() <
+            static_cast<std::size_t>(n_channels)) {
+          it->second.tuning_curve.resize(n_channels, 0.0f);
+        }
+        it->second.tuning_curve[pre.channel] += syn.weight;
+      }
+    }
+  }
+
   for (auto& kv : position_features_) {
     PositionFeatures& pf = kv.second;
     if (pf.n_neurons > 0) {
@@ -1602,15 +1645,31 @@ const PositionFeatures* Simulator::position_features_at(
 bool Simulator::dump_position_features_csv(const char* path) const {
   std::ofstream f(path);
   if (!f) return false;
+
+  // Tuning-curve width: max length across bins so every row has the
+  // same column count.
+  std::size_t n_channels = 0;
+  for (const auto& kv : position_features_) {
+    n_channels = std::max(n_channels, kv.second.tuning_curve.size());
+  }
+
   f << "bin_x,bin_y,bin_z,n_neurons,mean_fire_rate_ema,"
-       "mean_activity_baseline,mean_incoming_weight\n";
+       "mean_activity_baseline,mean_incoming_weight";
+  for (std::size_t i = 0; i < n_channels; ++i) f << ",tuning_" << i;
+  f << "\n";
   for (const auto& kv : position_features_) {
     const auto bin = pos_bin_decode(kv.first);
     const PositionFeatures& pf = kv.second;
     f << bin[0] << ',' << bin[1] << ',' << bin[2] << ','
       << pf.n_neurons << ',' << pf.mean_fire_rate_ema << ','
-      << pf.mean_activity_baseline << ',' << pf.mean_incoming_weight
-      << '\n';
+      << pf.mean_activity_baseline << ',' << pf.mean_incoming_weight;
+    for (std::size_t i = 0; i < n_channels; ++i) {
+      const float v = (i < pf.tuning_curve.size())
+                          ? pf.tuning_curve[i]
+                          : 0.0f;
+      f << ',' << v;
+    }
+    f << '\n';
   }
   return f.good();
 }

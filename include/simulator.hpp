@@ -259,6 +259,11 @@ struct PositionFeatures {
   float mean_fire_rate_ema = 0.0f;
   float mean_activity_baseline = 0.0f;
   float mean_incoming_weight = 0.0f;
+  // Tuning curve: total weight of incoming INPUT->bin synapses
+  // indexed by the source's channel. argmax(tuning_curve) is the
+  // bin's dominant input channel; the magnitude reports how strongly
+  // it is wired to its preferred stimulus. Empty until refreshed.
+  std::vector<float> tuning_curve;
 };
 
 // Initial state inspired by late-fetal cortical development.

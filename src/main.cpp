@@ -118,6 +118,11 @@ int main(int argc, char** argv) {
   cfg.Y = 64;
   cfg.Z = 64;
   cfg.region_size = 8;
+  // Mild BCM baseline tracking so per-area maturation differences show
+  // up in the position-features dump as bin-level baseline divergence.
+  // Without this the prior at birth always sees a constant 0.05 baseline
+  // and the cortical-map view is uniform.
+  cfg.bcm_baseline_alpha = 0.0008f;
 
   std::string mode = "schedule";
   int total_steps = 600;
@@ -251,6 +256,13 @@ int main(int argc, char** argv) {
   std::printf("\nran %d steps in %.3fs (%.1f steps/sec)\n",
               total_steps, dt, total_steps / dt);
   std::printf("wrote per-step metrics to dev_curve.csv\n");
+
+  // Dump cortical-map snapshot at end of run for visualisation.
+  sim.refresh_position_features();
+  sim.dump_position_features_csv("schedule_position_features.csv");
+  std::printf("wrote cortical-map snapshot to "
+              "schedule_position_features.csv (%zu bins)\n",
+              sim.position_bin_count());
 
   return 0;
 }
