@@ -78,14 +78,20 @@ void log_input(const std::string& line) {
   std::fflush(g_log);
 }
 
-constexpr int kClasses = 6;
+// 12-word vocabulary drawn from early-childhood acquisition corpora
+// (CHILDES, MacArthur-Bates CDI top words). Three from each of four
+// semantic groups: people (mom/dad/baby), objects (ball/dog/cat),
+// social/greetings (hi/bye), response (yes/no), action/request
+// (more/stop).
+constexpr int kClasses = 12;
 constexpr int kFeatPerClass = 4;
-constexpr int kExtFeatures = kClasses * kFeatPerClass;       // 24
-constexpr int kEffFeatures = kClasses;                       // 6
-constexpr int kAllFeatures = kExtFeatures + kEffFeatures;    // 30
+constexpr int kExtFeatures = kClasses * kFeatPerClass;       // 48
+constexpr int kEffFeatures = kClasses;                       // 12
+constexpr int kAllFeatures = kExtFeatures + kEffFeatures;    // 60
 
 const char* kWords[kClasses] = {
-    "mom", "dad", "hi", "bye", "yes", "no"
+    "mom", "dad", "baby", "ball", "dog", "cat",
+    "hi", "bye", "yes", "no", "more", "stop"
 };
 
 int word_index(const std::string& w) {
@@ -124,7 +130,9 @@ const char* utter(const float* rates) {
 
 snc::SimConfig make_config() {
   snc::SimConfig cfg;
-  cfg.X = 48; cfg.Y = 48; cfg.Z = 48;
+  // Bigger volume: 12 motor / inhibitor / self clusters and 48 ext
+  // inputs need more (x, y) lanes than the 4-word demo.
+  cfg.X = 64; cfg.Y = 64; cfg.Z = 48;
   cfg.region_size = 8;
   cfg.fire_threshold = 0.45f;
   cfg.weight_max = 1.5f;
@@ -180,19 +188,55 @@ struct Brain {
       : sim(cfg), rng(0xCC0DE) {}
 };
 
+// Rebuild the chat-side index vectors (motors / selfs / ext_in /
+// skip_noise) by scanning every neuron's role / channel / polarity.
+// Used both after `build_anatomy` and after `load_state`, since the
+// .snc save format has roles / channels but not the demo-specific
+// vectors.
+void rebuild_index(Brain& b) {
+  b.motors.assign(kClasses, 0);
+  b.selfs.assign(kClasses, 0);
+  b.ext_in.assign(kExtFeatures, 0);
+  b.inhibitors.clear();
+  for (const auto& nu : b.sim.neurons()) {
+    if (nu.role == snc::NeuronRole::INPUT) {
+      if (nu.channel >= 0 && nu.channel < kExtFeatures) {
+        b.ext_in[nu.channel] = nu.id;
+      } else if (nu.channel >= kExtFeatures &&
+                 nu.channel < kAllFeatures) {
+        b.selfs[nu.channel - kExtFeatures] = nu.id;
+      }
+    } else if (nu.role == snc::NeuronRole::OUTPUT) {
+      if (nu.channel >= 0 && nu.channel < kClasses) {
+        b.motors[nu.channel] = nu.id;
+      }
+    }
+  }
+  // skip_noise: every labelled-line cell + every inhibitory cell
+  // (the 12 lateral PV inh cells plus the ~20% GABAergic fraction
+  // randomize_polarity assigned in the bulk).
+  b.skip_noise.assign(b.sim.neuron_count() + 1, false);
+  for (uint32_t id : b.ext_in)  if (id < b.skip_noise.size()) b.skip_noise[id] = true;
+  for (uint32_t id : b.selfs)   if (id < b.skip_noise.size()) b.skip_noise[id] = true;
+  for (uint32_t id : b.motors)  if (id < b.skip_noise.size()) b.skip_noise[id] = true;
+  for (const auto& nu : b.sim.neurons()) {
+    const bool inh = nu.polarity != snc::NeuronPolarity::EXCITATORY;
+    if (inh && nu.id < b.skip_noise.size())
+      b.skip_noise[nu.id] = true;
+  }
+}
+
 // Place neurons + install innate priors. Mirrors vocab_demo but with
-// kClasses=6.
+// kClasses=12 and a 64x64x48 grid.
 void build_anatomy(Brain& b) {
   snc::Simulator& sim = b.sim;
-  const auto& cfg = sim.energy().rX();  // dummy use
-  (void)cfg;
   const int Z = sim.grid().Z();
   const int Y = sim.grid().Y();
 
   // Sparse fetal seed (no glia, no migrating, no CP -- chat builds its
   // bulk by sprouting during babble).
   snc::FetalSeed seed;
-  seed.vz_neurons = 100;
+  seed.vz_neurons = 160;
   seed.migrating_neurons = 0;
   seed.cortical_plate_neurons = 0;
   seed.vz_thickness = Z - 5;
@@ -200,18 +244,18 @@ void build_anatomy(Brain& b) {
   seed.frac_pv = 0.14f;
   seed.frac_sst = 0.04f;
   seed.frac_vip = 0.02f;
-  seed.brainstem_neurons = 8;
-  seed.thalamic_relay_neurons = 12;
-  seed.aversive_nucleus_neurons = 4;
+  seed.brainstem_neurons = 12;
+  seed.thalamic_relay_neurons = 16;
+  seed.aversive_nucleus_neurons = 6;
   sim.seed_fetal(seed);
 
-  // External sensory inputs: 24 channels, arranged in 6 rows of 4.
+  // External sensory inputs: 48 channels = 12 rows of 4 columns.
   b.ext_in.reserve(kExtFeatures);
   for (int c = 0; c < kClasses; ++c) {
     for (int f = 0; f < kFeatPerClass; ++f) {
       const int channel = c * kFeatPerClass + f;
-      const int x = 4 + f * 4;
-      const int y = 4 + c * 6;
+      const int x = 3 + f * 4;
+      const int y = 3 + c * 5;
       const uint32_t id = sim.add_neuron_at(x, y, 2);
       if (!id) {
         std::fprintf(stderr, "ext input %d failed at (%d,%d,2)\n",
@@ -224,13 +268,17 @@ void build_anatomy(Brain& b) {
     }
   }
 
-  // Motor outputs + self-perception + lateral inhibitors.
+  // Motor outputs + self-perception + lateral inhibitors. With 12
+  // clusters, lay them out as a 2-row x 6-col grid in (x, y) so they
+  // fit into a 64-wide volume with breathing room between clusters.
   b.motors.reserve(kClasses);
   b.selfs.reserve(kClasses);
   b.inhibitors.reserve(kClasses);
   for (int c = 0; c < kClasses; ++c) {
-    const int xm = 6 + c * 6;
-    const int ym = Y / 2;
+    const int col = c % 6;
+    const int row = c / 6;          // 0 or 1
+    const int xm = 6 + col * 9;
+    const int ym = (Y / 2 - 8) + row * 16;
     const uint32_t m = sim.add_neuron_at(xm, ym, Z - 3);
     sim.set_role(m, snc::NeuronRole::OUTPUT, c);
     sim.set_polarity(m, snc::NeuronPolarity::EXCITATORY);
@@ -280,12 +328,7 @@ void build_anatomy(Brain& b) {
     }
   }
 
-  // Skip-set so noise injection bypasses the labelled-line cells.
-  b.skip_noise.assign(sim.neuron_count() + 1, false);
-  for (uint32_t id : b.ext_in)    b.skip_noise[id] = true;
-  for (uint32_t id : b.motors)    b.skip_noise[id] = true;
-  for (uint32_t id : b.selfs)     b.skip_noise[id] = true;
-  for (uint32_t id : b.inhibitors) b.skip_noise[id] = true;
+  rebuild_index(b);
 }
 
 void inject_internal_noise(Brain& b) {
@@ -313,17 +356,19 @@ void run_present(Brain& b, const float* pattern, int prime_target,
 void cmd_help() {
   say(
       "commands:\n"
-      "  help                   list commands\n"
-      "  concepts               list available concepts\n"
-      "  babble <N>             N random motor firings (no reward)\n"
-      "  show <concept>         present sensory pattern, observe\n"
-      "  teach <concept>        present + prime matching motor\n"
-      "  correct                last response was right; reward\n"
-      "  wrong                  last response was wrong; aversive\n"
-      "  status                 brain stats\n"
-      "  save <path>            persist brain\n"
-      "  load <path>            reload brain (replaces state)\n"
-      "  quit                   exit\n");
+      "  help                       list commands\n"
+      "  concepts                   list available concepts\n"
+      "  babble <N>                 N random motor firings (no reward)\n"
+      "  show <concept>             present sensory pattern, observe\n"
+      "  teach <concept>            present + prime matching motor\n"
+      "  tell <c1> <c2> ...         present a sequence, hear responses\n"
+      "  correct                    last response was right; reward\n"
+      "  wrong                      last response was wrong; aversive\n"
+      "  sleep [<sws> <rem>]        SWS+REM consolidation cycle\n"
+      "  status                     brain stats and rolling accuracy\n"
+      "  save <path>                persist brain\n"
+      "  load <path>                reload brain (replaces state)\n"
+      "  quit                       exit (auto-sleep on the way out)\n");
 }
 
 void cmd_concepts() {
@@ -450,6 +495,29 @@ void cmd_wrong(Brain& b) {
               kWords[b.last_target]);
 }
 
+void cmd_sleep(Brain& b, int sws_steps = 80, int rem_steps = 60) {
+  // SWS-then-REM consolidation cycle. With no recent-pattern history
+  // tracked here (chat is open-ended), SWS replays the canonical
+  // patterns of every concept once, REM does fragmented internal-noise
+  // replay.
+  std::vector<std::vector<float>> seq;
+  seq.reserve(kClasses);
+  for (int c = 0; c < kClasses; ++c) {
+    std::vector<float> p(kAllFeatures, 0.0f);
+    p[c * kFeatPerClass + 0] = 1.0f;
+    p[c * kFeatPerClass + 1] = 1.0f;
+    seq.push_back(std::move(p));
+  }
+  say("[sleep:SWS] sequenced replay of %d concept patterns over %d steps\n",
+      kClasses, sws_steps);
+  b.sim.sleep_sws_replay(seq, kAllFeatures, sws_steps / kClasses,
+                          /*gap_steps=*/2, /*boost=*/1.6f);
+  say("[sleep:REM] fragmented replay over %d steps\n", rem_steps);
+  b.sim.sleep_rem_replay(rem_steps, seq, kAllFeatures, /*boost=*/1.8f);
+  say("[sleep] done. step=%d, synapses=%zu\n",
+      b.sim.current_step(), b.sim.total_synapses());
+}
+
 void cmd_tell(Brain& b, const std::vector<std::string>& words) {
   // Sequence presentation: each word is shown briefly with a small
   // silent gap between, and the network's spoken response is recorded
@@ -536,6 +604,11 @@ bool process_line(Brain& b, const std::string& raw) {
   }
   else if (cmd == "correct") cmd_correct(b);
   else if (cmd == "wrong")   cmd_wrong(b);
+  else if (cmd == "sleep") {
+    int sws = 80; int rem = 60;
+    is >> sws >> rem;
+    cmd_sleep(b, sws, rem);
+  }
   else if (cmd == "status")  cmd_status(b);
   else if (cmd == "save") {
     std::string p; is >> p;
@@ -549,7 +622,13 @@ bool process_line(Brain& b, const std::string& raw) {
     say("[load] %s -> %s\n", p.c_str(),
                 b.sim.load_state(p.c_str()) ? "ok" : "FAILED");
   }
-  else if (cmd == "quit" || cmd == "exit") return false;
+  else if (cmd == "quit" || cmd == "exit") {
+    // Auto-sleep on quit so the next session resumes from a
+    // consolidated state. Mimics the day-end sleep cycle.
+    say("[quit] auto-sleep before exit\n");
+    cmd_sleep(b, 60, 40);
+    return false;
+  }
   else say("unknown command '%s' (try 'help')\n", cmd.c_str());
   return true;
 }
@@ -599,21 +678,17 @@ int main(int argc, char** argv) {
       return 1;
     }
     say("[ready] loaded brain from %s\n", load_path);
-    // Note: skip_noise mapping needs the role/polarity already in the
-    // loaded neurons. Reconstruct it by scanning roles. Inhibitor cells
-    // are detected by polarity != EXCITATORY (PV/SST/VIP).
-    b.skip_noise.assign(b.sim.neuron_count() + 1, false);
-    for (const auto& nu : b.sim.neurons()) {
-      const bool inhibitory =
-          nu.polarity == snc::NeuronPolarity::INHIBITORY ||
-          nu.polarity == snc::NeuronPolarity::INHIBITORY_SST ||
-          nu.polarity == snc::NeuronPolarity::INHIBITORY_VIP;
-      const bool special =
-          nu.role == snc::NeuronRole::INPUT ||
-          nu.role == snc::NeuronRole::OUTPUT ||
-          inhibitory;
-      if (special && nu.id < b.skip_noise.size())
-        b.skip_noise[nu.id] = true;
+    rebuild_index(b);
+    // Lifelong neurogenesis: each new "day" the network gains a small
+    // batch of newborn neurons in the VZ. They start with the local
+    // BCM baseline (apply_position_prior is called inside birth).
+    const int newborn = b.sim.birth_neurons(7);
+    if (newborn > 0) {
+      // Resize skip_noise so out-of-bounds checks stay correct, then
+      // re-mark the labelled-line cells (newborns are bulk -> they
+      // SHOULD get noise so they participate in spontaneous activity).
+      b.skip_noise.resize(b.sim.neuron_count() + 1, false);
+      say("[wake] %d newborn neurons added to the VZ\n", newborn);
     }
   } else {
     build_anatomy(b);
