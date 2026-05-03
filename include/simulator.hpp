@@ -514,6 +514,29 @@ class Simulator {
                               int n_features,
                               float boost = 1.6f);
 
+  // Slow-wave-sleep style sequenced replay. Each pattern in the supplied
+  // list is presented in order for `present_per_pattern` steps, then a
+  // brief silence (`gap_steps`) lets the connectome consolidate before
+  // the next pattern. Mirrors hippocampal sharp-wave-ripples: the most
+  // recently lived sequences are replayed in their original temporal
+  // order, recruiting STDP windows that depend on causal ordering.
+  // STDP gain is boosted (`boost`); attention modulator is attenuated
+  // (sleep is a low-acetylcholine state).
+  void sleep_sws_replay(const std::vector<std::vector<float>>& sequence,
+                         int n_features,
+                         int present_per_pattern = 12,
+                         int gap_steps = 4,
+                         float boost = 1.8f);
+
+  // REM-style fragmented replay: random patterns from the pool, drawn
+  // independently each step, with high acetylcholine and very strong
+  // STDP boost so unusual co-firings get rapidly consolidated. Models
+  // the dream-like recombination characteristic of REM sleep.
+  void sleep_rem_replay(int n_steps,
+                         const std::vector<std::vector<float>>& patterns,
+                         int n_features,
+                         float boost = 2.0f);
+
   // Run one full simulation step.
   void step();
 

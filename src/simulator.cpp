@@ -1354,6 +1354,82 @@ void Simulator::sleep_consolidate(int n_steps, float boost) {
   cfg_.acetylcholine_level = saved_ach;
 }
 
+void Simulator::sleep_sws_replay(
+    const std::vector<std::vector<float>>& sequence, int n_features,
+    int present_per_pattern, int gap_steps, float boost) {
+  // Slow-wave-sleep replay: each pattern in `sequence` is presented in
+  // order, like the hippocampus replaying a recent trajectory in its
+  // original temporal sequence. STDP windows that depend on causal
+  // ordering get coherent input; the network consolidates the
+  // *order-dependent* aspects of the experience, not just the
+  // co-firing statistics that random replay reinforces. Silence gaps
+  // between patterns let dynamics decay so successive patterns don't
+  // contaminate each other's plasticity.
+  if (sequence.empty() || n_features <= 0) return;
+  const float saved_a_ltp = cfg_.stdp_a_ltp;
+  const float saved_a_ltd = cfg_.stdp_a_ltd;
+  const float saved_ach = cfg_.acetylcholine_level;
+  cfg_.stdp_a_ltp *= boost;
+  cfg_.stdp_a_ltd *= 0.6f;        // SWS suppresses LTD a bit
+  cfg_.acetylcholine_level *= 0.3f;  // low ACh in slow-wave sleep
+
+  std::vector<float> zero(n_features, 0.0f);
+  for (const auto& pat : sequence) {
+    for (int s = 0; s < present_per_pattern; ++s) {
+      apply_input_pattern(
+          pat.data(),
+          std::min<int>(n_features, static_cast<int>(pat.size())));
+      step();
+    }
+    for (int s = 0; s < gap_steps; ++s) {
+      apply_input_pattern(zero.data(), n_features);
+      step();
+    }
+  }
+
+  cfg_.stdp_a_ltp = saved_a_ltp;
+  cfg_.stdp_a_ltd = saved_a_ltd;
+  cfg_.acetylcholine_level = saved_ach;
+}
+
+void Simulator::sleep_rem_replay(
+    int n_steps, const std::vector<std::vector<float>>& patterns,
+    int n_features, float boost) {
+  // REM-style replay: random fragments at each step with very high
+  // STDP gain and elevated attention. Encourages the recombination
+  // and unusual associations characteristic of dreams. Implementation
+  // is the noise-augmented pattern replay from sleep_replay_patterns
+  // but with stronger boost and an acetylcholine *increase* rather
+  // than decrease (REM is a high-ACh state).
+  if (patterns.empty() || n_features <= 0) {
+    sleep_consolidate(n_steps, boost);
+    return;
+  }
+  const float saved_a_ltp = cfg_.stdp_a_ltp;
+  const float saved_a_ltd = cfg_.stdp_a_ltd;
+  const float saved_ach = cfg_.acetylcholine_level;
+  cfg_.stdp_a_ltp *= boost;
+  cfg_.stdp_a_ltd *= 0.5f;
+  cfg_.acetylcholine_level *= 1.4f;
+
+  std::uniform_int_distribution<int> pick(
+      0, static_cast<int>(patterns.size()) - 1);
+  std::uniform_real_distribution<float> bigger_noise(0.0f, 0.08f);
+  for (int s = 0; s < n_steps; ++s) {
+    const auto& pat = patterns[pick(rng_)];
+    apply_input_pattern(pat.data(),
+                        std::min<int>(n_features, static_cast<int>(pat.size())));
+    for (Neuron& nu : neurons_) {
+      nu.input_acc += bigger_noise(rng_);
+    }
+    step();
+  }
+
+  cfg_.stdp_a_ltp = saved_a_ltp;
+  cfg_.stdp_a_ltd = saved_a_ltd;
+  cfg_.acetylcholine_level = saved_ach;
+}
+
 void Simulator::sleep_replay_patterns(
     int n_steps, const std::vector<std::vector<float>>& patterns,
     int n_features, float boost) {
