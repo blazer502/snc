@@ -1,5 +1,6 @@
 build/
 *.snc
+*.snc.meta
 dev_curve.csv
 *.png
 vocab_voxels.csv

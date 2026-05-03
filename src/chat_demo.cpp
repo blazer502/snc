@@ -41,6 +41,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <fstream>
 #include <iostream>
 #include <random>
 #include <sstream>
@@ -183,10 +184,54 @@ struct Brain {
   int correct_shows = 0;
   int total_teaches = 0;
   int correct_teaches = 0;
+  // Current developmental session count -- used to gate auto-grow on
+  // load and propagated to the .meta sidecar on save / quit.
+  int session_count = 1;
 
   explicit Brain(snc::SimConfig cfg)
       : sim(cfg), rng(0xCC0DE) {}
 };
+
+// Developmental volume-stage table. Anchored to the pre-adolescent
+// peak (~1300 cm^3) of human cortical volume. The session count
+// (stored in <brain>.snc.meta) decides which stage the network is in;
+// at each load, if the brain is smaller than the target stage's
+// dimensions we grow_volume to catch up.
+struct DevStage {
+  int x, y, z;
+  int newborns_per_session;
+  const char* name;
+};
+constexpr DevStage kStages[] = {
+    { 64,  64, 48,  7, "toddler"        },  // sessions 0-29   (~200 cm^3)
+    { 96,  96, 64, 15, "early-child"    },  // sessions 30-59  (~590 cm^3)
+    {112, 112, 80, 25, "middle-child"   },  // sessions 60-99  (~1000 cm^3)
+    {128, 128, 96, 40, "preadolescent"  },  // sessions 100+   (~1500 cm^3)
+};
+constexpr int kNumStages = sizeof(kStages) / sizeof(kStages[0]);
+
+int stage_for_session(int session) {
+  if (session < 30)  return 0;
+  if (session < 60)  return 1;
+  if (session < 100) return 2;
+  return 3;
+}
+
+struct ChatMeta {
+  int session_count = 0;
+};
+
+ChatMeta load_meta(const std::string& brain_path) {
+  ChatMeta m;
+  std::ifstream f(brain_path + ".meta");
+  if (f) f >> m.session_count;
+  return m;
+}
+
+void save_meta(const std::string& brain_path, const ChatMeta& m) {
+  std::ofstream f(brain_path + ".meta");
+  if (f) f << m.session_count << "\n";
+}
 
 // Rebuild the chat-side index vectors (motors / selfs / ext_in /
 // skip_noise) by scanning every neuron's role / channel / polarity.
@@ -495,6 +540,29 @@ void cmd_wrong(Brain& b) {
               kWords[b.last_target]);
 }
 
+void cmd_grow(Brain& b, int dx, int dy, int dz) {
+  // Grow the simulated volume by `dx`, `dy`, `dz` voxels per side.
+  // Each must be a multiple of region_size (8). Neuron coordinates
+  // and the energy field migrate automatically; we rebuild the
+  // chat-side index since soma positions shift.
+  if (dx < 0 || dy < 0 || dz < 0) {
+    say("[grow] negative side amounts not supported here\n");
+    return;
+  }
+  if (dx % 8 != 0 || dy % 8 != 0 || dz % 8 != 0) {
+    say("[grow] amounts must be multiples of region_size (8)\n");
+    return;
+  }
+  const auto& g = b.sim.grid();
+  say("[grow] %dx%dx%d -> %dx%dx%d\n",
+      g.X(), g.Y(), g.Z(),
+      g.X() + 2 * dx, g.Y() + 2 * dy, g.Z() + 2 * dz);
+  b.sim.grow_volume(dx, dy, dz);
+  rebuild_index(b);
+  say("[grow] done. neurons=%zu synapses=%zu\n",
+      b.sim.neuron_count(), b.sim.total_synapses());
+}
+
 void cmd_sleep(Brain& b, int sws_steps = 80, int rem_steps = 60) {
   // SWS-then-REM consolidation cycle. With no recent-pattern history
   // tracked here (chat is open-ended), SWS replays the canonical
@@ -609,12 +677,22 @@ bool process_line(Brain& b, const std::string& raw) {
     is >> sws >> rem;
     cmd_sleep(b, sws, rem);
   }
+  else if (cmd == "grow") {
+    int dx = 0, dy = 0, dz = 0;
+    is >> dx >> dy >> dz;
+    cmd_grow(b, dx, dy, dz);
+  }
   else if (cmd == "status")  cmd_status(b);
   else if (cmd == "save") {
     std::string p; is >> p;
     if (p.empty()) p = "chat_brain.snc";
-    say("[save] %s -> %s\n", p.c_str(),
-                b.sim.save_state(p.c_str()) ? "ok" : "FAILED");
+    const bool ok = b.sim.save_state(p.c_str());
+    if (ok) {
+      ChatMeta m;
+      m.session_count = b.session_count;
+      save_meta(p, m);
+    }
+    say("[save] %s -> %s\n", p.c_str(), ok ? "ok" : "FAILED");
   }
   else if (cmd == "load") {
     std::string p; is >> p;
@@ -679,24 +757,43 @@ int main(int argc, char** argv) {
     }
     say("[ready] loaded brain from %s\n", load_path);
     rebuild_index(b);
-    // Lifelong neurogenesis: each new "day" the network gains a small
-    // batch of newborn neurons in the VZ. They start with the local
-    // BCM baseline (apply_position_prior is called inside birth).
-    const int newborn = b.sim.birth_neurons(7);
+    // Read the session count from the meta sidecar and decide which
+    // developmental stage we should be in. Auto-grow if the saved
+    // brain is smaller than the target stage's dimensions.
+    ChatMeta meta = load_meta(load_path);
+    meta.session_count += 1;  // this load = a new session
+    b.session_count = meta.session_count;
+    const int target = stage_for_session(meta.session_count);
+    const auto& stage = kStages[target];
+    const auto& g = b.sim.grid();
+    const int dx = (stage.x - g.X()) / 2;
+    const int dy = (stage.y - g.Y()) / 2;
+    const int dz = (stage.z - g.Z()) / 2;
+    if (dx > 0 || dy > 0 || dz > 0) {
+      say("[stage] session %d -> %s (%dx%dx%d -> %dx%dx%d)\n",
+          meta.session_count, stage.name, g.X(), g.Y(), g.Z(),
+          stage.x, stage.y, stage.z);
+      b.sim.grow_volume(dx, dy, dz);
+      rebuild_index(b);
+    } else {
+      say("[stage] session %d (%s)\n", meta.session_count, stage.name);
+    }
+    // Lifelong neurogenesis: stage-scaled batch of newborn VZ neurons.
+    const int newborn = b.sim.birth_neurons(stage.newborns_per_session);
     if (newborn > 0) {
-      // Resize skip_noise so out-of-bounds checks stay correct, then
-      // re-mark the labelled-line cells (newborns are bulk -> they
-      // SHOULD get noise so they participate in spontaneous activity).
       b.skip_noise.resize(b.sim.neuron_count() + 1, false);
       say("[wake] %d newborn neurons added to the VZ\n", newborn);
     }
+    // Save the bumped session count back so the next load advances.
+    save_meta(load_path, meta);
   } else {
     build_anatomy(b);
     say("[ready] new brain. %d concepts: ", kClasses);
     for (int i = 0; i < kClasses; ++i) {
       say("%s%s", kWords[i], (i + 1 == kClasses) ? "\n" : " ");
     }
-    say("[ready] type 'help' for commands.\n");
+    say("[ready] session 1 (%s). type 'help' for commands.\n",
+        kStages[0].name);
   }
 
   std::string line;
