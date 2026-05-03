@@ -538,7 +538,9 @@ int main(int argc, char** argv) {
   std::printf("\n[sleep] consolidating recent patterns\n");
   sim.sleep_replay_patterns(200, recent_patterns, kAllFeatures, 1.5f);
   sim.save_state("vocab_brain.snc");
-  std::printf("[sleep] saved.\n");
+  // Structural CSV dump for the visualisation scripts.
+  sim.dump_csv("vocab");
+  std::printf("[sleep] saved (.snc + vocab_voxels/neurons/synapses.csv)\n");
 
   return 0;
 }

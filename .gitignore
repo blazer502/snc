@@ -1,3 +1,7 @@
 build/
 *.snc
 dev_curve.csv
+*.png
+vocab_voxels.csv
+vocab_neurons.csv
+vocab_synapses.csv

@@ -1393,6 +1393,57 @@ void Simulator::sleep_replay_patterns(
   cfg_.acetylcholine_level = saved_ach;
 }
 
+bool Simulator::dump_csv(const char* prefix) const {
+  // Write structural snapshot to three companion CSV files: voxels (the
+  // 2-bit grid filtered to non-EMPTY cells), neurons (id + role +
+  // polarity + soma + body-voxel count + n_branches) and synapses
+  // (pre, post, position, weight, branch, conduction delay, permanent).
+  // The Python visualisation scripts under `scripts/` read these.
+  const std::string p = prefix;
+  std::ofstream vf(p + "_voxels.csv");
+  std::ofstream nf(p + "_neurons.csv");
+  std::ofstream sf(p + "_synapses.csv");
+  if (!vf || !nf || !sf) return false;
+
+  vf << "x,y,z,state\n";
+  for (int z = 0; z < grid_.Z(); ++z) {
+    for (int y = 0; y < grid_.Y(); ++y) {
+      for (int x = 0; x < grid_.X(); ++x) {
+        const auto c = grid_.get(x, y, z);
+        if (c == BrainGrid::EMPTY) continue;
+        vf << x << ',' << y << ',' << z << ',' << static_cast<int>(c) << '\n';
+      }
+    }
+  }
+
+  nf << "id,role,polarity,channel,soma_x,soma_y,soma_z,n_branches,"
+        "body_voxels,fire_rate_ema\n";
+  for (const Neuron& nu : neurons_) {
+    nf << nu.id << ',' << static_cast<int>(nu.role) << ','
+       << static_cast<int>(nu.polarity) << ',' << nu.channel << ','
+       << static_cast<int>(nu.soma.x) << ','
+       << static_cast<int>(nu.soma.y) << ','
+       << static_cast<int>(nu.soma.z) << ','
+       << static_cast<int>(nu.n_branches) << ',' << nu.body.size() << ','
+       << nu.fire_rate_ema << '\n';
+  }
+
+  sf << "pre,post,pos_x,pos_y,pos_z,weight,branch,conduction_delay,"
+        "permanent,consolidation_tag\n";
+  for (const Neuron& nu : neurons_) {
+    for (const auto& syn : nu.outgoing) {
+      sf << nu.id << ',' << syn.target_neuron << ','
+         << static_cast<int>(syn.pos.x) << ','
+         << static_cast<int>(syn.pos.y) << ','
+         << static_cast<int>(syn.pos.z) << ',' << syn.weight << ','
+         << static_cast<int>(syn.branch) << ',' << syn.conduction_delay
+         << ',' << (syn.permanent ? 1 : 0) << ','
+         << syn.consolidation_tag << '\n';
+    }
+  }
+  return true;
+}
+
 // ---- Sleep: persistence layer --------------------------------------------
 //
 // Binary file layout (little-endian, host-aligned):

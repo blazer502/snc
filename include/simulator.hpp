@@ -489,6 +489,12 @@ class Simulator {
   bool save_state(const char* path) const;
   bool load_state(const char* path);
 
+  // Dump the structural state to CSV files at `prefix_voxels.csv`,
+  // `prefix_neurons.csv` and `prefix_synapses.csv`. Used by the
+  // visualisation scripts under `scripts/` to render the 3D anatomy and
+  // the connectome graph. Only structure is written -- no chemistry.
+  bool dump_csv(const char* prefix) const;
+
   // Sleep replay / consolidation. Drives the network with internal noise
   // only (no external input), with `boost` multiplied STDP amplitude, for
   // `n_steps` steps. Replays the patterns currently encoded in the
