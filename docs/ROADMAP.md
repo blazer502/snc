@@ -20,7 +20,12 @@ parameter, bias-overrides-niche.
 ## Dependency graph
 
 ```
-                             Pack ZZ                    (HARD prereq)
+                              Pack M                     (FOUNDATIONAL)
+                              (real neuron shapes)
+                                │
+                                ▼
+                              Pack ZZ                    (HARD prereq)
+                              (microglial pruning)
                                 │
                 ┌───────────────┼─────────────────┐
                 ▼               ▼                 ▼
@@ -48,7 +53,163 @@ parameter, bias-overrides-niche.
 
 ---
 
-## Phase 0 — Hard prerequisite
+## Phase 0 — Foundational
+
+### Pack M — Real neuron shapes (morphology templates)
+
+**Status**: planned. Foundational. Reframes how every subsequent pack thinks
+about a "neuron" — from a point soma to an actual 3D shape.
+
+**Why** (project vision): the simulator's name is *Structural* Neuromorphic
+Computing — its claim to biological fidelity rests on the structural matrix
+representing real neuronal morphology. Currently `add_neuron_at` places a
+single soma voxel and `sprouting_phase` extends it as a random isotropic blob
+(uniform over 6 neighbours). No cell-type-specific apical-vs-basal direction,
+no axonal projection. The "3 BLOCKED" voxel state — designed to mark tissue
+that "may exist but cannot become a synapse" — is currently used only for
+radial-glia scaffolds, not to construct actual neuron shapes. Pack M fixes
+this: each neuron is born with a morphologically realistic dendritic tree
+and axonal arbor stamped into the grid, and `Neuron::body` becomes the *set
+of "1" voxels* forming the cell's shape. Synapses (state "2") emerge where
+shapes physically contact — exactly as in real cortex.
+
+**Concept**:
+
+```
+   ENABLED BY THE 2-BIT GRID:
+   ───────────────────────────────────────────────
+   1  NEURON  = part of a real neuron's morphology
+                (soma, dendrites, axon — all "1")
+   2  SYNAPSE = contact between two neurons' "1" voxels
+   3  BLOCKED = tissue that exists but isn't part of a
+                synapse-eligible neurite (radial glia,
+                vasculature, axon hillock, myelinated
+                axon segments — Pack M may use this for
+                axonal-trunk segments)
+```
+
+**Mechanism**:
+
+- A `MorphologyTemplate` is a list of relative voxel offsets and roles
+  (soma / apical / basal / axon / axon-trunk-blocked).
+- Cell-type → template lookup (excitatory pyramidal, PV basket, SST
+  Martinotti, VIP, INPUT, OUTPUT).
+- At neuron birth (`add_neuron_at`, `birth_neurons`, `seed_fetal`'s VZ /
+  brainstem / thalamic / aversive / cortical-plate placements), the template
+  is stamped centered on the soma. Each non-soma voxel is placed only if the
+  target voxel is EMPTY and within bounds — collisions are silently skipped
+  (the cell loses that branch in that direction; a structural fault, like
+  in real development).
+- Synapses still form via `synaptogenesis_phase` at NEURON↔NEURON contacts
+  — the change is that NEURON voxels are now placed deterministically by
+  morphology, not stochastically by sprouting.
+- Sprouting becomes *secondary*: it grows the existing shape further into
+  free space (analogous to dendritic spine elongation), still
+  activity-driven but biased toward the cell's preferred axis (pyramidals
+  +z, inhibitories laterally).
+
+**Templates** (cell-type → relative voxels around soma at origin):
+
+| cell type | dendrites (basal/apical) | axon | total non-soma voxels |
+| --------- | ------------------------ | ---- | --------------------- |
+| Pyramidal (EXC) | apical: (0,0,+1)..(0,0,+3); basal: (±1,0,0), (0,±1,0) | (0,0,-1), (0,0,-2), (±1,0,-2) | 9 |
+| PV basket | (±1,0,0), (0,±1,0), (0,0,±1) | local axon: 6 neighbours of (0,0,-1) | ~10 |
+| SST Martinotti | (0,0,+1), (0,0,+2) | ascending: (0,0,+3), (0,0,+4), (0,0,+5) | 5 |
+| VIP | (±1,0,0), (0,±1,0) | (0,0,-1), (0,0,-2) | 6 |
+| INPUT | (0,0,+1) (1-voxel "axon hillock" toward cortex) | — | 1 |
+| OUTPUT | (0,0,-1) (1-voxel "axon" toward white matter) | — | 1 |
+
+These are deliberately small in v1 — the 64×64×48 toddler grid only has
+196 608 voxels and ~390 starting neurons; even at ~10 voxels per neuron
+total occupancy stays under 2%.
+
+**API additions**:
+
+```cpp
+struct MorphologyVoxel {
+  int8_t dx, dy, dz;
+  uint8_t role;   // 0 dendrite, 1 axon, 2 axon-trunk (BLOCKED)
+};
+struct MorphologyTemplate {
+  const MorphologyVoxel* voxels;
+  int n;
+};
+// Look up the right template for a given polarity / role.
+MorphologyTemplate morphology_for(NeuronPolarity pol, NeuronRole role);
+// Stamp the template into the grid centered on the neuron's soma.
+// Skips voxels out of bounds or already occupied.
+void Simulator::stamp_morphology(Neuron& nu, MorphologyTemplate t);
+```
+
+**Implementation steps**:
+
+1. Add `MorphologyVoxel` / `MorphologyTemplate` headers and the static
+   per-cell-type tables.
+2. Add `Simulator::stamp_morphology` that places NEURON / BLOCKED voxels
+   relative to the soma and appends them to `nu.body` (NEURON voxels only).
+3. Modify `add_neuron_at` to call `stamp_morphology` after the soma is set.
+   Default template = pyramidal; callers that want a different shape call
+   `stamp_morphology` again after `set_polarity` / `set_role` (or the
+   simulator re-stamps on polarity change).
+4. Modify `seed_fetal` to stamp morphologies for VZ / brainstem / thalamic
+   / aversive / cortical-plate cells. VZ neurons get a minimal "newborn"
+   template (soma + 1 leading process), upgraded after migration.
+5. Verify build + smoke test (build_anatomy must still place all
+   labelled-line cells without collisions; the `place_or_nearby` collision
+   helper added in earlier Pack 26 attempts is still useful here).
+6. Run lifetime sweep — must still hit ≥ 75% s15. If regressed: shrink
+   templates by half, retry. Goal is to reach a template size that lands
+   without regression, then expand toward biological fidelity.
+
+**Success criteria**:
+
+- ✅ Lifetime sweep ≥ 75% s15 with default morphologies stamped.
+- ✅ `Neuron::body` is non-trivial (size > 1) for every neuron immediately
+  after `add_neuron_at` — verified via a `status` printout.
+- ✅ Synaptogenesis between adjacent INPUT and motor cells still produces
+  the expected labelled-line connectivity (i.e., morphology overlap
+  produces synapses where it should).
+- ✅ Bonus: an anatomical visualisation script (`scripts/render_anatomy.py`)
+  shows recognisable pyramidal / interneuron shapes.
+
+**Risk + mitigations**:
+
+- **Substrate occupancy jumps.** With stamps at ~10 voxels per neuron,
+  occupancy at session 1 goes from <1% to ~2%. Demand-driven growth
+  threshold (10%) and pruning still apply. If pre-stamping fills regions
+  too densely, sprouting is gated naturally by the 4-neighbour
+  volume-exclusion threshold.
+- **Collision with build_anatomy's deterministic placements.** Existing
+  ext_in / image_in / motor / self / inhibitor cells assume free voxels at
+  hand-chosen positions. After Pack M, those positions must accommodate
+  the cell's stamp. Mitigation: in `build_anatomy`, after `set_polarity`
+  on a labelled-line cell, re-run `stamp_morphology` with the chosen
+  polarity-specific template; collisions silently skip (acceptable for
+  v1).
+- **The sprout/prune balance shifts.** Pack ZZ becomes more important
+  because the substrate is denser at start. Pack M ships first to test
+  whether the new initial occupancy alone regresses, then Pack ZZ adds
+  active shedding.
+
+**Citations**:
+
+- Markram et al. 2015 *Cell* 163:456 — *Reconstruction and simulation of
+  neocortical microcircuitry* (Blue Brain Project, the canonical
+  morphology library).
+- Ascoli et al. 2007 *J. Neurosci.* 27:9247 — NeuroMorpho.org morphology
+  database.
+- DeFelipe et al. 2013 *Nat. Rev. Neurosci.* 14:202 — pyramidal-cell
+  diversity across cortical layers and species.
+- Tremblay, Lee & Rudy 2016 *Neuron* 91:260 — GABAergic interneuron
+  morphology by subtype (PV/SST/VIP).
+- Kandel Ch. 2 (cell types in nervous system).
+
+**Estimated effort**: 1.5–2 days. Risk-managed by starting small and
+expanding if baseline holds.
+
+---
+
+## Phase 1 — Hard prerequisite
 
 ### Pack ZZ — Microglial pruning
 
@@ -579,17 +740,18 @@ warrant a focused investigation pack rather than feature work.
 
 | Phase | Pack | Days | Cumulative |
 | ----- | ---- | :--: | :--------: |
-| 0 | Pack ZZ                     | 1–2 | 1–2 |
-| A | Pack 26-A.tune retry        | 1   | 2–3 |
-| A | Pack 26-B (visual)          | 1.5 | 3.5–4.5 |
-| A | Pack 26-C (motor speech)    | 2–3 | 5.5–7.5 |
-| B | Pack 27 (diagnostics)       | 1   | 6.5–8.5 |
-| B | Pack 28 (predictive coding) | 1–2 | 7.5–10.5 |
-| C | Pack 29 (counting + 2-word) | 3–5 | 10.5–15.5 |
+| 0 | Pack M  (morphology templates) | 1.5–2 | 1.5–2 |
+| 1 | Pack ZZ (microglial pruning)   | 1–2   | 2.5–4 |
+| A | Pack 26-A.tune retry           | 1     | 3.5–5 |
+| A | Pack 26-B (visual)             | 1.5   | 5–6.5 |
+| A | Pack 26-C (motor speech)       | 2–3   | 7–9.5 |
+| B | Pack 27 (diagnostics)          | 1     | 8–10.5 |
+| B | Pack 28 (predictive coding)    | 1–2   | 9–12.5 |
+| C | Pack 29 (counting + 2-word)    | 3–5   | 12–17.5 |
 
-**Total to user-directive-4 goal**: ~2–3 weeks of focused work, assuming
-no compounding regressions. Each pack is independently testable; the
-no-regressions directive applies at every step.
+**Total to user-directive-4 goal**: ~2.5–3.5 weeks of focused work,
+assuming no compounding regressions. Each pack is independently testable;
+the no-regressions directive applies at every step.
 
 ---
 
