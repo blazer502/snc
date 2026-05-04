@@ -1049,6 +1049,38 @@ extended training) can score against, replacing the prior "lifetime
 sweep on canonical 4-pixel patterns" which the brain had already
 saturated at 100%.
 
+### Pack V-tune — visual-only training mode (LANDED)
+
+Pack V's first run hinted that pre-consolidated phonemic engrams may be
+dominating multimodal training. Pack V-tune isolates the visual binding
+pathway by adding `cmd_image_teach_visual` (motor prime + image only;
+no label features, no cochlea voice, no A1 tonotopic bias) and a
+`--mode {multimodal,visual,curriculum}` flag in `run_mnist.py`.
+
+**Three-mode comparison** (warm-start from `lifetime_brain.snc`,
+30 train + 20 test per digit, forced argmax over 4 digit words):
+
+| mode       | overall | one | two | three | four |
+| :--------- | :-----: | :-: | :-: | :---: | :--: |
+| multimodal | 21.2%   | 55% | 15% | 5%    | 10%  |
+| visual     | **25.0%** | 75% | 10% | 5%    | 10%  |
+| curriculum | 22.5%   | 65% | 5%  | 10%   | 10%  |
+
+**Findings:**
+1. Visual-only training does help (+3.8 pp absolute), confirming that
+   label-engram dominance was a real but secondary factor.
+2. The 4×4 retina remains the dominant bottleneck — even pure visual
+   training cannot separate 2/3/4 above chance because all three
+   collapse to similar central/curved 4-pixel patterns. Only `one` (a
+   distinctive vertical stroke) reaches >50% in any mode.
+3. Curriculum (multimodal first, visual second) doesn't beat pure
+   visual; the multimodal first half partially "anchors" the engrams
+   in a way the visual half can't easily reshape.
+
+**Conclusion:** Pack VR (retina expansion) is the right next step.
+Without higher pixel resolution, the substrate cannot represent
+stroke-level differences between similar digits.
+
 **Pack VR (next, sketch):** retina expansion 4×4 → 8×8 or 16×16, with
 V1 receptive fields tiled accordingly (more orientation/location
 columns), and a CIFAR-10 prep pipeline using the existing 4-class
@@ -1135,6 +1167,7 @@ warrant a focused investigation pack rather than feature work.
 | C | Pack 29 v2 (sequence-prediction behaviour) | 2–3 | 2–3     |
 | C | Pack 29 v3 (counting / quantity binding) | 2–3 | 4–6     |
 | V | Pack V (MNIST + voice multimodal validation) | LANDED | — |
+| V | Pack V-tune (visual-only training mode)  | LANDED | — |
 | V'| Pack VR (retina expansion + CIFAR + label-engram regularisation) | 3–5 | — |
 | T | Pack TREE MVP — branch data structure       | LANDED | — |
 | T' | Pack TREE behavioural (leaf-biased + directional sprout) | LANDED | — |

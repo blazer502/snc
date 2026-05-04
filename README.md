@@ -569,13 +569,25 @@ First run (4-class subset {1,2,3,4}, warm-started from `lifetime_brain.snc`,
 | forced |  21.2%  | 55%  | 15%  |  5%   | 10%  |
 
 `open` argmax is over the full 20-word vocabulary; `forced` restricts argmax
-to the 4 digit words. The result is honest empirical evidence that the
-current 4×4 retina is too coarse for stroke recognition (most digits collapse
-to 1–4 lit pixels) and that pre-consolidated phonemic engrams dominate visual
-binding when only 30 training samples are available. Pack V's value is the
-reproducible external benchmark; a higher-resolution retina is on the roadmap
-as **Pack VR**, after which CIFAR-10 with similar voice pairing becomes
-addressable.
+to the 4 digit words.
+
+**Pack V-tune** (`--mode visual` / `--mode curriculum`) adds
+`image_teach_visual`, which trains image → motor without the label/voice
+drive. Comparison (forced argmax):
+
+| mode       | overall | one | two | three | four |
+| :--------- | :-----: | :-: | :-: | :---: | :--: |
+| multimodal |  21.2%  | 55% | 15% |  5%   | 10%  |
+| visual     |  25.0%  | 75% | 10% |  5%   | 10%  |
+| curriculum |  22.5%  | 65% |  5% | 10%   | 10%  |
+
+Visual-only training helps `one` (a distinctive vertical stroke) reach 75%
+recall but cannot separate 2/3/4, which all collapse to similar central
+patterns under 4×4 mean-pooling. The result is honest empirical evidence
+that the 4×4 retina is the dominant bottleneck — pre-consolidated phonemic
+engrams contribute, but raising image resolution (Pack VR on the roadmap)
+is the necessary next step before CIFAR-10 with similar voice pairing
+becomes addressable.
 
 ---
 

@@ -952,6 +952,8 @@ void cmd_help() {
       "  see <concept>              4x4 retinal image input -> motor\n"
       "  image_teach <w> p0..p15    multimodal: arbitrary 4x4 image +\n"
       "                             paired voice/label drive (Pack V)\n"
+      "  image_teach_visual <w> p0..p15  visual-only training (no\n"
+      "                             label, no voice; motor prime only)\n"
       "  image_test p0..p15         visual-only readout (no label/voice)\n"
       "  imagine <concept>          internal recall: self-cue only,\n"
       "                             motor read-out is the engram's\n"
@@ -1543,6 +1545,58 @@ void cmd_image_teach(Brain& b, const std::string& concept,
               b.correct_teaches, b.total_teaches);
 }
 
+// Pack V-tune: visual-only training. Same setup as cmd_image_teach
+// but drops the label drive and the cochlea voice. Only the image
+// pixels + a motor prime + a CREB-style excitability boost on the
+// target motor/self pair are active. Forces the image -> motor
+// pathway to grow on its own rather than riding on already-
+// consolidated phonemic engrams. Use this as the second half of a
+// "label-then-vision" curriculum.
+void cmd_image_teach_visual(Brain& b, const std::string& concept,
+                            const float* pixels) {
+  const int c = word_index(concept);
+  if (c < 0) { say("unknown concept '%s'\n", concept.c_str()); return; }
+  b.sim.clear_eligibility();
+  b.sim.reset_dynamics();
+  float zero[kAllFeatures] = {0};
+  for (int s = 0; s < 20; ++s) {
+    b.sim.apply_input_pattern(zero, kAllFeatures);
+    b.sim.step();
+  }
+  // Bias only the motor / self -- no label-feature INPUT bias, no A1
+  // tonotopic bias. This is the key difference from cmd_image_teach.
+  std::vector<uint32_t> biased;
+  biased.reserve(2);
+  if (b.motors[c]) {
+    b.sim.set_excitability_bias(b.motors[c], 3.0f);
+    biased.push_back(b.motors[c]);
+  }
+  if (b.selfs[c]) {
+    b.sim.set_excitability_bias(b.selfs[c], 3.0f);
+    biased.push_back(b.selfs[c]);
+  }
+  b.last_biased = std::move(biased);
+  // Image-only stimulus. No label, no cochlea, no self.
+  float pat[kAllFeatures] = {0};
+  for (int p = 0; p < kImageFeatures; ++p) {
+    pat[kImgChannelStart + p] = pixels[p];
+  }
+  run_present(b, pat, /*prime=*/c, 0.3f, 30);
+  float rates[kClasses];
+  b.sim.read_output(rates, kClasses);
+  const char* said = utter(rates);
+  const int said_idx = word_index(said);
+  b.last_target = c;
+  b.last_said = said_idx;
+  b.last_match = (said_idx == c);
+  std::memcpy(b.last_rates, rates, sizeof(rates));
+  ++b.total_teaches;
+  if (b.last_match) ++b.correct_teaches;
+  say("[image_teach_visual] target=%s  said=%s%s  teach-acc=%d/%d\n",
+              concept.c_str(), said, b.last_match ? "  (match)" : "",
+              b.correct_teaches, b.total_teaches);
+}
+
 // Visual-only test: present the 4x4 pattern with no label, no voice,
 // no priming. The motor read-out is the brain's classification.
 void cmd_image_test(Brain& b, const float* pixels) {
@@ -1758,6 +1812,20 @@ bool process_line(Brain& b, const std::string& raw) {
       say("usage: image_teach <word> p0 p1 .. p15  (got %d)\n", got);
     } else {
       cmd_image_teach(b, c, pixels);
+    }
+  }
+  else if (cmd == "image_teach_visual") {
+    std::string c; is >> c;
+    float pixels[kImageFeatures] = {0};
+    int got = 0;
+    for (int i = 0; i < kImageFeatures; ++i) {
+      if (!(is >> pixels[i])) break;
+      ++got;
+    }
+    if (c.empty() || got != kImageFeatures) {
+      say("usage: image_teach_visual <word> p0 .. p15  (got %d)\n", got);
+    } else {
+      cmd_image_teach_visual(b, c, pixels);
     }
   }
   else if (cmd == "image_test") {
