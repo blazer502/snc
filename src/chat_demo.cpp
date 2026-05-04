@@ -1146,6 +1146,94 @@ void cmd_correct(Brain& b) {
   b.last_biased.clear();
 }
 
+void cmd_pair_teach(Brain& b,
+                    const std::string& concept_a,
+                    const std::string& concept_b) {
+  // Pack 29 v1: two-word combinations. Train the brain on a
+  // sequential AB pairing -- "A then B". Pack 25's memory linking
+  // (same session_id -> 0.5x soft fresh-neuron penalty between
+  // co-promoted classes) brings A's and B's engram populations
+  // into shared cells so recalling A activates the cells that
+  // also drive B. Premotor sequencer (Pack 26-C) carries the
+  // actual temporal trajectory.
+  const int ca = word_index(concept_a);
+  const int cb = word_index(concept_b);
+  if (ca < 0 || cb < 0) {
+    say("unknown concept '%s' or '%s'\n",
+        concept_a.c_str(), concept_b.c_str());
+    return;
+  }
+  b.sim.clear_eligibility();
+  b.sim.reset_dynamics();
+  float zero[kAllFeatures] = {0};
+  for (int s = 0; s < 12; ++s) {
+    b.sim.apply_input_pattern(zero, kAllFeatures);
+    b.sim.step();
+  }
+
+  // Bias the participating cells (both A and B label / motor /
+  // self) so promote_engram picks them; reset at end. Pack 25.1
+  // bias-floor keeps them admissible regardless of niche distance.
+  std::vector<uint32_t> biased;
+  auto bias = [&](uint32_t id, float v) {
+    if (id) {
+      b.sim.set_excitability_bias(id, v);
+      biased.push_back(id);
+    }
+  };
+  for (int f = 0; f < kFeatPerClass; ++f) {
+    bias(b.ext_in[ca * kFeatPerClass + f], 3.0f);
+    bias(b.ext_in[cb * kFeatPerClass + f], 3.0f);
+  }
+  bias(b.motors[ca], 3.0f); bias(b.motors[cb], 3.0f);
+  bias(b.selfs[ca],  3.0f); bias(b.selfs[cb],  3.0f);
+
+  // Phase 1: present A.
+  float pat[kAllFeatures];
+  make_pattern(ca, pat);
+  pat[kExtFeatures + ca] = 0.3f;
+  run_present(b, pat, ca, 0.3f, 12);
+
+  // Brief silent gap so A's spike volley reaches motor + premotor
+  // before B begins. The premotor sequencer (Pack 26-C) records
+  // motor[A]'s firing in this window.
+  for (int s = 0; s < 4; ++s) {
+    b.sim.apply_input_pattern(zero, kAllFeatures);
+    b.sim.step();
+  }
+
+  // Phase 2: present B with prime.
+  make_pattern(cb, pat);
+  pat[kExtFeatures + cb] = 0.3f;
+  run_present(b, pat, cb, 0.3f, 12);
+
+  // Reward both A and B together. With a single session_id
+  // bracketing both promote_engram calls, Pack 25's memory linking
+  // softens the fresh-neuron penalty between the two classes from
+  // 10x to 2x -- they end up sharing engram cells.
+  float rewards[kClasses];
+  for (int c = 0; c < kClasses; ++c) {
+    rewards[c] = (c == ca || c == cb) ? 1.0f : -0.3f;
+  }
+  b.sim.apply_reward_per_class(rewards, kClasses, 0.05f);
+  for (int s = 0; s < 4; ++s) b.sim.step();
+
+  const int prom_a = b.sim.promote_engram(ca, /*top_k_internal=*/8);
+  const int prom_b = b.sim.promote_engram(cb, /*top_k_internal=*/8);
+
+  for (uint32_t id : biased) b.sim.set_excitability_bias(id, 1.0f);
+
+  // Read the post-episode rates so the user can see the pair was
+  // observed in the desired order.
+  float rates[kClasses];
+  b.sim.read_output(rates, kClasses);
+  say("[pair_teach] %s -> %s  promoted=%d/%d  "
+      "rates: %s=%.2f %s=%.2f\n",
+      concept_a.c_str(), concept_b.c_str(), prom_a, prom_b,
+      concept_a.c_str(), rates[ca],
+      concept_b.c_str(), rates[cb]);
+}
+
 void cmd_wrong(Brain& b) {
   if (b.last_target < 0) {
     say("[wrong] no last episode\n");
@@ -1555,6 +1643,9 @@ bool process_line(Brain& b, const std::string& raw) {
   }
   else if (cmd == "correct") cmd_correct(b);
   else if (cmd == "wrong")   cmd_wrong(b);
+  else if (cmd == "pair_teach") {
+    std::string a, b2; is >> a >> b2; cmd_pair_teach(b, a, b2);
+  }
   else if (cmd == "sleep") {
     int sws = 80; int rem = 60;
     is >> sws >> rem;

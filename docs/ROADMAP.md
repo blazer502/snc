@@ -1068,7 +1068,9 @@ warrant a focused investigation pack rather than feature work.
 | A' | Pack 26-C-full (closed-loop articulator → cochlea)| 1.5 | 1.5 |
 | B | Pack 27 (network diagnostics)           | LANDED | —       |
 | B | Pack 28 (predictive coding for INTERNAL)| LANDED | —       |
-| C | Pack 29 (counting + 2-word)             | 3–5    | 6.5–9.5 |
+| C | Pack 29 v1 (cmd_pair_teach API)         | LANDED | —       |
+| C | Pack 29 v2 (sequence-prediction behaviour) | 2–3 | 2–3     |
+| C | Pack 29 v3 (counting / quantity binding) | 2–3 | 4–6     |
 | T | Pack TREE MVP — branch data structure       | LANDED | — |
 | T' | Pack TREE behavioural (leaf-biased + directional sprout) | LANDED | — |
 | Φ | Pack Φ — consciousness deliberation loop (user-triggered) | 2–5 | — |
