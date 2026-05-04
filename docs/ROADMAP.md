@@ -1059,8 +1059,8 @@ warrant a focused investigation pack rather than feature work.
 | A | Pack 26-B.tune.lite (visual V1)         | LANDED | —       |
 | A | Pack 26-C.tune.lite (motor speech)      | LANDED | —       |
 | A' | Pack 26-C-full (closed-loop articulator → cochlea)| 1.5 | 1.5 |
-| B | Pack 27 (network diagnostics)           | 1      | 2.5     |
-| B | Pack 28 (predictive coding for INTERNAL)| 1–2    | 3.5–4.5 |
+| B | Pack 27 (network diagnostics)           | LANDED | —       |
+| B | Pack 28 (predictive coding for INTERNAL)| LANDED | —       |
 | C | Pack 29 (counting + 2-word)             | 3–5    | 6.5–9.5 |
 | T | Pack TREE — branching dendritic-tree topology | 3–5 | — |
 | Φ | Pack Φ — consciousness deliberation loop (user-triggered) | 2–5 | — |
