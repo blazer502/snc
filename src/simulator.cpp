@@ -602,17 +602,52 @@ namespace {
 //   PV basket       -- local lateral axon (+x)
 //   SST Martinotti  -- ascending axon (+z, toward layer 1)
 //   VIP             -- local axon to other inhibitories (+y)
+// Phase 1' expansion: pyramidal cells get a richer morphology -- real
+// layer-2/3 and layer-5 pyramidals have an apical dendrite ascending
+// to layer 1, basal dendrites radiating laterally from the soma, and
+// a descending axon to white matter (DeFelipe et al. 2013 *Nat. Rev.
+// Neurosci.* 14:202). The voxel-coarse approximation:
+//   (0, 0, +1) apical dendrite        [DENDRITE]
+//   (+1, 0, 0) basal dendrite         [DENDRITE]
+//   (-1, 0, 0) basal dendrite         [DENDRITE]
+//   (0, +1, 0) basal dendrite         [DENDRITE]
+//   (0, -1, 0) basal dendrite         [DENDRITE]
+//   (0, 0, -1) descending axon        [AXON]
+// 5 dendrite voxels (apical + 4 basal) + 1 axon = 6 morphology voxels
+// per pyramidal. Each cell now has a real receiving surface in 5
+// directions and a real projection voxel below the soma.
 constexpr MorphologyVoxel kMorphPyramidal[] = {
-    { 0, 0, -1, /*AXON*/ 1},                   // descending axon
+    { 0, 0,  1, /*DENDRITE*/ 0},               // apical dendrite
+    { 1, 0,  0, /*DENDRITE*/ 0},               // basal +x
+    {-1, 0,  0, /*DENDRITE*/ 0},               // basal -x
+    { 0,  1, 0, /*DENDRITE*/ 0},               // basal +y
+    { 0, -1, 0, /*DENDRITE*/ 0},               // basal -y
+    { 0, 0, -1, /*AXON    */ 1},               // descending axon
 };
+// PV basket: dense local axonal arbor + multipolar dendrites
+// (Tremblay, Lee & Rudy 2016 *Neuron* 91:260). 4 lateral axon voxels
+// for perisomatic targeting + 2 dendrite voxels above/below soma.
 constexpr MorphologyVoxel kMorphPv[] = {
-    { 1, 0,  0, /*AXON*/ 1},                   // perisomatic lateral
+    { 1, 0,  0, /*AXON    */ 1},
+    {-1, 0,  0, /*AXON    */ 1},
+    { 0,  1, 0, /*AXON    */ 1},
+    { 0, -1, 0, /*AXON    */ 1},
+    { 0, 0,  1, /*DENDRITE*/ 0},
+    { 0, 0, -1, /*DENDRITE*/ 0},
 };
+// SST Martinotti: ascending axon to layer 1 + bipolar dendrites.
 constexpr MorphologyVoxel kMorphSst[] = {
-    { 0, 0,  1, /*AXON*/ 1},                   // ascending
+    { 0, 0,  1, /*AXON    */ 1},
+    { 0, 0,  2, /*AXON    */ 1},
+    { 1, 0,  0, /*DENDRITE*/ 0},
+    {-1, 0,  0, /*DENDRITE*/ 0},
 };
+// VIP: local axon to other inhibitories + lateral dendrites.
 constexpr MorphologyVoxel kMorphVip[] = {
-    { 0,  1, 0, /*AXON*/ 1},                   // lateral
+    { 0,  1, 0, /*AXON    */ 1},
+    { 0, -1, 0, /*AXON    */ 1},
+    { 1, 0,  0, /*DENDRITE*/ 0},
+    {-1, 0,  0, /*DENDRITE*/ 0},
 };
 
 MorphologyTemplate morphology_for(NeuronPolarity pol, NeuronRole role) {
