@@ -13,14 +13,17 @@ the per-pack failure record lives in
 
 ## Live baseline
 
-**Vocabulary expansion to 16 words** (commit `89e5996`) — **100% accuracy
-across ALL 30 sessions** with 16/16 perfect recall in pure-review. Adds
-four basic number words (one, two, three, four) to the 12-word toddler
-vocabulary, a step toward the Pack 29 counting + minimal-math goal.
-Synapse count stable at ~459 across the full sweep; neuron count grows
-~322 → ~514 via lifelong neurogenesis, transitioning to "early-child"
-stage at session 30. Phase 1 + Phase 1' AXON × DENDRITE morphology
-preserves labelled-line readout reliably at 16 classes.
+**Pack 26-A.tune.lite — cochlear pathway** (commit `8dfd007`) —
+**100% accuracy across 25 sessions, 20/20 perfect recall in pure-review.**
+After 5 prior reverts pre-Phase-1, the cochlear pathway finally lands.
+Architecture: 8 cochlea bins → 8 A1 cells (direct, weight 0.55 delay 13);
+A1 → motor plastic at weight 0.0 (no homeostatic drag) grown organically
+by STDP. Phase 1's AXON × DENDRITE rule prevents spurious organic
+A1↔motor contacts -- the missing prerequisite that broke every prior
+attempt. The brain now hears the word spoken (Peterson-Barney 1952
+formants over Greenwood 1990 log-frequency cochlear bins) in parallel
+with the symbolic label drive. 20 words, 8 semantic groups (people,
+objects, greetings, response, action, numbers, colours).
 
 ## Dependency graph
 
@@ -863,7 +866,7 @@ warrant a focused investigation pack rather than feature work.
 | 2  | Phase 1 morphology refactor (AXON×DEND)| LANDED | —       |
 | 2' | Phase 1' (multi-voxel arborisations)   | LANDED | —       |
 | 2'' | Vocab expansion 12 -> 16 (numbers)    | LANDED | —       |
-| A | Pack 26-A.tune retry (after Phase 1)    | 1      | 4       |
+| A | Pack 26-A.tune.lite (cochlear)          | LANDED | —       |
 | A | Pack 26-B (visual)                      | 1.5    | 5.5     |
 | A | Pack 26-C (motor speech)                | 2–3    | 7.5–8.5 |
 | B | Pack 27 (diagnostics)                   | 1      | 8.5–9.5 |
