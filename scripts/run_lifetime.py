@@ -29,6 +29,7 @@ ALL_WORDS = [
     "mom", "dad", "baby", "ball", "dog", "cat",
     "hi", "bye", "yes", "no", "more", "stop",
     "one", "two", "three", "four",
+    "red", "green", "blue", "yellow",
 ]
 
 

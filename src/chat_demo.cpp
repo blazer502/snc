@@ -79,39 +79,39 @@ void log_input(const std::string& line) {
   std::fflush(g_log);
 }
 
-// 16-word vocabulary drawn from early-childhood acquisition corpora
+// 20-word vocabulary drawn from early-childhood acquisition corpora
 // (CHILDES, MacArthur-Bates CDI top words). The original 12 toddler
-// words plus four basic number words (one .. four), forming a step
-// toward the Pack 29 counting + minimal-math goal in user directive 4.
-// Semantic groups:
+// words + 4 number basics + 4 colour basics. Semantic groups:
 //   people     : mom / dad / baby
 //   objects    : ball / dog / cat
 //   greetings  : hi / bye
 //   response   : yes / no
 //   action     : more / stop
 //   numbers    : one / two / three / four
-constexpr int kClasses = 16;
+//   colours    : red / green / blue / yellow
+constexpr int kClasses = 20;
 constexpr int kFeatPerClass = 4;
-constexpr int kLabelFeatures = kClasses * kFeatPerClass;     // 64
-constexpr int kSelfFeatures = kClasses;                      // 16
+constexpr int kLabelFeatures = kClasses * kFeatPerClass;     // 80
+constexpr int kSelfFeatures = kClasses;                      // 20
 constexpr int kImgRows = 4;
 constexpr int kImgCols = 4;
 constexpr int kImageFeatures = kImgRows * kImgCols;          // 16
 
 // Channel layout (input neurons):
-//   [0   .. 63 ]  label sensory features      (kLabelFeatures = 64)
-//   [64  .. 79 ]  efference / self-perception (kSelfFeatures  = 16)
-//   [80  .. 95 ]  retinotopic image pixels    (kImageFeatures = 16)
-constexpr int kImgChannelStart = kLabelFeatures + kSelfFeatures;  // 80
-constexpr int kExtFeatures = kLabelFeatures;                  // 64
-constexpr int kEffFeatures = kSelfFeatures;                   // 16
+//   [0   .. 79 ]  label sensory features      (kLabelFeatures = 80)
+//   [80  .. 99 ]  efference / self-perception (kSelfFeatures  = 20)
+//   [100 .. 115]  retinotopic image pixels    (kImageFeatures = 16)
+constexpr int kImgChannelStart = kLabelFeatures + kSelfFeatures;  // 100
+constexpr int kExtFeatures = kLabelFeatures;                  // 80
+constexpr int kEffFeatures = kSelfFeatures;                   // 20
 constexpr int kAllFeatures =
-    kLabelFeatures + kSelfFeatures + kImageFeatures;          // 96
+    kLabelFeatures + kSelfFeatures + kImageFeatures;          // 116
 
 const char* kWords[kClasses] = {
     "mom", "dad", "baby", "ball", "dog", "cat",
     "hi", "bye", "yes", "no", "more", "stop",
-    "one", "two", "three", "four"
+    "one", "two", "three", "four",
+    "red", "green", "blue", "yellow"
 };
 
 // Hand-designed 4x4 retinal patterns -- one per concept. Each
@@ -144,6 +144,10 @@ constexpr int kImageBits[kClasses][4] = {
     /* two   */ {1,  2, 13, 14},
     /* three */ {0,  6,  9, 15},
     /* four  */ {3,  5, 10, 12},
+    /* red    */ {2,  5,  8, 11},
+    /* green  */ {1,  4, 11, 14},
+    /* blue   */ {0,  7,  8, 15},
+    /* yellow */ {3,  6,  9, 12},
 };
 
 int word_index(const std::string& w) {
@@ -427,15 +431,16 @@ void build_anatomy(Brain& b) {
     }
   }
 
-  // Motor outputs + self-perception + lateral inhibitors. With 16
-  // clusters, lay them out as a 2-row x 8-col grid in (x, y).
+  // Motor outputs + self-perception + lateral inhibitors. With 20
+  // clusters, lay them out as a 2-row x 10-col grid in (x, y) at
+  // stride 6 to fit X = 64.
   b.motors.reserve(kClasses);
   b.selfs.reserve(kClasses);
   b.inhibitors.reserve(kClasses);
   for (int c = 0; c < kClasses; ++c) {
-    const int col = c % 8;
-    const int row = c / 8;          // 0 or 1
-    const int xm = 4 + col * 7;
+    const int col = c % 10;
+    const int row = c / 10;          // 0 or 1
+    const int xm = 4 + col * 6;
     const int ym = (Y / 2 - 8) + row * 16;
     const uint32_t m = sim.add_neuron_at(xm, ym, Z - 3);
     sim.set_role(m, snc::NeuronRole::OUTPUT, c);
