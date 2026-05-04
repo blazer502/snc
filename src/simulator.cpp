@@ -63,6 +63,8 @@ void Simulator::seed_neurons(int n) {
                     static_cast<int16_t>(y),
                     static_cast<int16_t>(z)};
         neu.body.push_back(neu.soma);
+        // Pack TREE: soma is the root of the cell's branching tree.
+        neu.body_branch.push_back({kBranchNoParent, 0u, 255u});
         neurons_.push_back(std::move(neu));
         apply_position_prior(neurons_.back());
         break;
@@ -95,6 +97,7 @@ int Simulator::birth_neurons(int n, const BoundingBox* area) {
                     static_cast<int16_t>(y),
                     static_cast<int16_t>(z)};
         neu.body.push_back(neu.soma);
+        neu.body_branch.push_back({kBranchNoParent, 0u, 255u});
         neurons_.push_back(std::move(neu));
         apply_position_prior(neurons_.back());
         ++placed;
@@ -393,14 +396,25 @@ void Simulator::seed_fetal(const FetalSeed& f) {
                   static_cast<int16_t>(y),
                   static_cast<int16_t>(z)};
       neu.body.push_back(neu.soma);
+      neu.body_branch.push_back({kBranchNoParent, 0u, 255u});
       // Leading process: a small +z extension representing the migrating
-      // neuron's pia-directed pioneer dendrite.
+      // neuron's pia-directed pioneer dendrite. Pack TREE: each
+      // pioneer voxel is a child of the previous one along the
+      // migrating axis (linear chain), thinning distally.
+      uint16_t parent = 0;
+      uint8_t  parent_thick = 255;
       for (int e = 1; e <= leading_process; ++e) {
         const int nz = z + e;
         if (!try_set_neuron(x, y, nz, neu.id)) break;
         neu.body.push_back({static_cast<int16_t>(x),
                             static_cast<int16_t>(y),
                             static_cast<int16_t>(nz)});
+        const uint8_t child_thick =
+            static_cast<uint8_t>(parent_thick * 0.85f);
+        neu.body_branch.push_back({parent, static_cast<uint8_t>(e),
+                                    child_thick});
+        parent = static_cast<uint16_t>(neu.body.size() - 1);
+        parent_thick = child_thick;
       }
       neurons_.push_back(std::move(neu));
       apply_position_prior(neurons_.back());
@@ -682,18 +696,36 @@ int Simulator::stamp_morphology(uint32_t neuron_id) {
   // simulation steps) would also be cleared here, but `set_role` /
   // `set_polarity` are normally called immediately after
   // `add_neuron_at` before any sprouting has run.
-  for (auto it = nu.body.begin(); it != nu.body.end();) {
-    if (it->x == nu.soma.x && it->y == nu.soma.y &&
-        it->z == nu.soma.z) {
-      ++it;
-      continue;
+  // Pack TREE: keep `body_branch` parallel to `body` -- erase from
+  // both in lockstep so indices stay aligned.
+  if (nu.body_branch.size() != nu.body.size()) {
+    // Defensive: legacy / partial state. Re-initialise the parallel
+    // vector to soma-only so we don't underflow the parallel walk.
+    nu.body_branch.assign(nu.body.size(),
+                          BranchData{kBranchNoParent, 0u, 255u});
+  }
+  for (std::size_t i = nu.body.size(); i-- > 0;) {
+    if (nu.body[i].x == nu.soma.x && nu.body[i].y == nu.soma.y &&
+        nu.body[i].z == nu.soma.z) {
+      continue;  // keep soma
     }
-    if (grid_.in_bounds(it->x, it->y, it->z)) {
-      grid_.set(it->x, it->y, it->z, BrainGrid::EMPTY);
-      owner_[lin(it->x, it->y, it->z)] = 0;
-      voxel_role_[lin(it->x, it->y, it->z)] = ROLE_DENDRITE;
+    if (grid_.in_bounds(nu.body[i].x, nu.body[i].y, nu.body[i].z)) {
+      grid_.set(nu.body[i].x, nu.body[i].y, nu.body[i].z, BrainGrid::EMPTY);
+      owner_[lin(nu.body[i].x, nu.body[i].y, nu.body[i].z)] = 0;
+      voxel_role_[lin(nu.body[i].x, nu.body[i].y, nu.body[i].z)] =
+          ROLE_DENDRITE;
     }
-    it = nu.body.erase(it);
+    nu.body.erase(nu.body.begin() + i);
+    nu.body_branch.erase(nu.body_branch.begin() + i);
+  }
+  // Locate soma's index (should be 0 after the above).
+  uint16_t soma_idx = 0;
+  for (std::size_t i = 0; i < nu.body.size(); ++i) {
+    if (nu.body[i].x == nu.soma.x && nu.body[i].y == nu.soma.y &&
+        nu.body[i].z == nu.soma.z) {
+      soma_idx = static_cast<uint16_t>(i);
+      break;
+    }
   }
   const MorphologyTemplate t = morphology_for(nu.polarity, nu.role);
   int placed = 0;
@@ -721,6 +753,9 @@ int Simulator::stamp_morphology(uint32_t neuron_id) {
       nu.body.push_back({static_cast<int16_t>(x),
                           static_cast<int16_t>(y),
                           static_cast<int16_t>(z)});
+      // Pack TREE: stamped voxels are children of the soma in the
+      // tree (depth=1), thinner than the trunk.
+      nu.body_branch.push_back({soma_idx, 1u, 200u});
     }
     ++placed;
   }
@@ -735,6 +770,8 @@ uint32_t Simulator::add_neuron_at(int x, int y, int z) {
               static_cast<int16_t>(y),
               static_cast<int16_t>(z)};
   neu.body.push_back(neu.soma);
+  // Pack TREE: soma is the root of the cell's branching tree.
+  neu.body_branch.push_back({kBranchNoParent, 0u, 255u});
   neurons_.push_back(std::move(neu));
   // Soft cortical-map prior on the just-pushed neuron.
   apply_position_prior(neurons_.back());
@@ -1869,7 +1906,8 @@ void Simulator::sprouting_phase() {
     for (int a = 0; a < cfg_.sprout_attempts; ++a) {
       std::uniform_int_distribution<int> pick(
           0, static_cast<int>(nu.body.size()) - 1);
-      const Voxel& src = nu.body[pick(rng_)];
+      const int src_idx = pick(rng_);
+      const Voxel& src = nu.body[src_idx];
 
       const int* d = kNeighbours[nbr(rng_)];
       const int nx = src.x + d[0];
@@ -1910,6 +1948,23 @@ void Simulator::sprouting_phase() {
       nu.body.push_back({static_cast<int16_t>(nx),
                           static_cast<int16_t>(ny),
                           static_cast<int16_t>(nz)});
+      // Pack TREE: the new voxel is a child of the source voxel in
+      // the cell's branching tree. Depth = parent.depth + 1;
+      // thickness = parent.thickness * 0.85 (distal taper). The
+      // parallel `body_branch` may legitimately lag `body` if the
+      // source neuron was constructed pre-Pack-TREE; guard with a
+      // resize.
+      if (nu.body_branch.size() < nu.body.size() - 1) {
+        nu.body_branch.resize(nu.body.size() - 1,
+                               BranchData{kBranchNoParent, 0u, 255u});
+      }
+      const BranchData& parent = nu.body_branch[src_idx];
+      const uint8_t child_depth = static_cast<uint8_t>(
+          std::min(255, static_cast<int>(parent.depth) + 1));
+      const uint8_t child_thick = static_cast<uint8_t>(
+          parent.thickness * 0.85f);
+      nu.body_branch.push_back(
+          {static_cast<uint16_t>(src_idx), child_depth, child_thick});
       e -= cfg_.sprout_cost;
       ++last_stats_.sprouts;
     }
@@ -2480,9 +2535,9 @@ void rvec(std::ifstream& f, std::vector<T>& v) {
 bool Simulator::save_state(const char* path) const {
   std::ofstream f(path, std::ios::binary);
   if (!f) return false;
-  const char magic[4] = {'S', 'N', 'C', 'B'};  // SNCB = SNC11
+  const char magic[4] = {'S', 'N', 'C', 'C'};  // SNCC = SNC12 (Pack TREE)
   f.write(magic, 4);
-  uint32_t version = 11;
+  uint32_t version = 12;
   wpod(f, version);
   wpod(f, cfg_);
   wpod(f, step_);
@@ -2517,6 +2572,7 @@ bool Simulator::save_state(const char* path) const {
     wvec(f, nu.branch_threshold);
     wvec(f, nu.branch_passive_gain);
     wvec(f, nu.body);
+    wvec(f, nu.body_branch);          // Pack TREE
     wvec(f, nu.incoming_queue);
 
     uint64_t outn = nu.outgoing.size();
@@ -2557,10 +2613,10 @@ bool Simulator::load_state(const char* path) {
   if (!f) return false;
   char magic[4];
   f.read(magic, 4);
-  if (std::memcmp(magic, "SNCB", 4) != 0) return false;
+  if (std::memcmp(magic, "SNCC", 4) != 0) return false;
   uint32_t version;
   rpod(f, version);
-  if (version != 11) return false;
+  if (version != 12) return false;
 
   rpod(f, cfg_);
   rpod(f, step_);
@@ -2607,6 +2663,7 @@ bool Simulator::load_state(const char* path) {
     rvec(f, nu.branch_threshold);
     rvec(f, nu.branch_passive_gain);
     rvec(f, nu.body);
+    rvec(f, nu.body_branch);          // Pack TREE
     rvec(f, nu.incoming_queue);
 
     uint64_t outn;

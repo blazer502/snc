@@ -176,6 +176,34 @@ struct MorphologyTemplate {
   int n;
 };
 
+// Pack TREE: per-body-voxel tree-topology data, parallel to
+// `Neuron::body`. The user observed that neurons should "extend
+// outward like tree roots" rather than being represented as flat
+// occupancy maps. This struct gives every body voxel an explicit
+// position in the cell's branching tree:
+//   parent_idx  -- index into Neuron::body of the parent voxel,
+//                  or UINT16_MAX for the root (soma)
+//   depth       -- distance from soma in tree-edges (soma=0,
+//                  template voxels stamped from soma=1, sprouted
+//                  from a depth-1 voxel=2, etc.)
+//   thickness   -- 255 at trunk, decreases distally; matches real
+//                  cortex where distal dendrites are thinner due
+//                  to actin / microtubule transport falloff.
+//                  Used by future leaf-biased sprouting and
+//                  distal-preferring microglial pruning passes.
+//
+// MVP: the field is populated correctly but no phase consults it
+// yet for behavioural decisions. Existing flat-body iteration
+// continues unchanged. Future packs flip on the directional
+// behaviour by reading depth + thickness during sprouting /
+// pruning / synaptogenesis branch routing.
+struct BranchData {
+  uint16_t parent_idx;
+  uint8_t  depth;
+  uint8_t  thickness;
+};
+constexpr uint16_t kBranchNoParent = 0xFFFFu;
+
 struct Neuron {
   uint32_t id = 0;          // 1-based; 0 is reserved for "no owner"
   Voxel soma{0, 0, 0};
@@ -192,6 +220,14 @@ struct Neuron {
   // but are not stored here so that sprouting iteration only walks pure
   // neuron tissue.
   std::vector<Voxel> body;
+
+  // Pack TREE: parallel to `body`, one entry per body voxel. Tracks
+  // each voxel's position in the cell's branching tree (parent index,
+  // depth from soma, thickness). MVP: populated correctly but no
+  // phase consults it for behavioural decisions yet -- future packs
+  // (leaf-biased sprouting, distal-preferring pruning, branch-index
+  // routing in synaptogenesis) flip those on.
+  std::vector<BranchData> body_branch;
 
   // Outgoing synapses (this neuron is pre-synaptic).
   std::vector<SynapseEdge> outgoing;
