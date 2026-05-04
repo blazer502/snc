@@ -13,15 +13,15 @@ the per-pack failure record lives in
 
 ## Live baseline
 
-**Pack M v2** (commit `34eb845`) — **91.7% accuracy at session 15** (11/12)
-on the 12-word lifetime sweep, with a 100% peak at session 13 (12/12 perfect
-recall). Real neuron shapes stamped at birth via per-polarity morphology
-templates: each neuron is born with an actual 3D shape rather than a point
-soma. Pack ZZ's microglial pruning provides the substrate headroom that
-makes morphology fit. Synapse count at s15 is 8214 vs 8690 pre-Pack-M (-5%):
-morphology + microglia together yield a tighter, more efficient connectome
-at the same accuracy. The "3 BLOCKED" voxel state now does what it was
-designed to do — encode tissue that exists but isn't synapse-eligible.
+**Phase 1 morphology refactor** (commit `cc9bf4e`) — **100% accuracy at every
+session 1..15** (12/12 perfect recall throughout the sweep). The
+`synaptogenesis_phase` now requires AXON × DENDRITE pairings (not arbitrary
+NEURON × NEURON), matching how real cortical chemical synapses form. Each
+neuron is born with a real 3D morphology (Pack M v2), sheds redundant
+synapses (Pack ZZ v3), and connects via biologically-meaningful axon-of-pre
+/ dendrite-of-post contacts only. Synapse count is frozen at ~265 (the
+hand-installed labelled-line priors); spurious synaptogenesis is gated off
+by the role check.
 
 ## Dependency graph
 
@@ -861,7 +861,8 @@ warrant a focused investigation pack rather than feature work.
 | 0a | Pack P-lite v2 (parallel workers)      | LANDED | — |
 | 1  | Pack ZZ (microglial pruning)           | LANDED | —       |
 | 1' | Pack M v2 (morphology, BLOCKED stamps) | LANDED | —       |
-| 2  | Phase 1 morphology refactor            | 3      | 3       |
+| 2  | Phase 1 morphology refactor (AXON×DEND)| LANDED | —       |
+| 2' | Phase 1 expansion (multi-voxel arbors) | 1–2    | 1–2     |
 | A | Pack 26-A.tune retry (after Phase 1)    | 1      | 4       |
 | A | Pack 26-B (visual)                      | 1.5    | 5.5     |
 | A | Pack 26-C (motor speech)                | 2–3    | 7.5–8.5 |
