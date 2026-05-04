@@ -431,11 +431,15 @@ microglial pruning v1, GNW connector hubs without ignition gating,
 cochlear pathway (Pack 26-A) attempts × 3 — see
 `~/.claude/projects/-home-chanyoung-snc/memory/snc_lessons.md`.
 
-**Next**: Pack 26-A.tune.lite — a smaller cochlear pathway (8-bin cochlea
-+ 8 A1 cells, no CN/IC/MGN intermediates) testing whether reduced
-substrate overhead lets the auditory pathway land. After that: Pack 26-B
-(visual organ), Pack 26-C (motor speech), Pack 27 (network diagnostics),
-Pack 28 (predictive coding), Pack 29 (counting + two-word combinations).
+**Next**: Pack ZZ (microglial pruning) — a hard prerequisite for any further
+organ-adding pack. Pack 26-A.tune.lite was tried as a smaller cochlear
+pathway (8-bin cochlea + 8 A1 cells) but still regressed by one word at
+session 15; the substrate has no headroom without active synapse shedding.
+
+**Full plan** through the pre-adolescent goal: see [docs/ROADMAP.md](docs/ROADMAP.md).
+Order: Pack ZZ → Pack 26-A retry → Pack 26-B (visual) → Pack 26-C (motor
+speech) → Pack 27 (diagnostics) → Pack 28 (predictive coding) → Pack 29
+(counting + two-word combinations) → Pack 30+.
 
 ---
 
