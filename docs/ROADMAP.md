@@ -13,14 +13,13 @@ the per-pack failure record lives in
 
 ## Live baseline
 
-**Pack P-lite v2** (commit `f4eec6a`) — **83.3% accuracy at session 15** (10/12)
-on the 12-word lifetime sweep. Event-driven spike dispatch (v1) plus
-deterministic OpenMP parallelism via per-target bucketing (v2). Each
-parallel worker owns a disjoint set of post-synaptic neurons (events
-partitioned by `target_neuron % N`), so writes to `branch_potential`
-never collide; within a bucket events run sequentially so float
-accumulation is deterministic. N=1 single-threaded is bit-equivalent
-to v1; chat_demo runs at N=4.
+**Pack ZZ v3** (commit `6de27d1`) — **91.7% accuracy at session 15** (11/12)
+on the 12-word lifetime sweep. Microglial pruning (silence-age + weak-weight
++ tag-protection criteria) on top of Pack P-lite v2's event-driven dispatch.
+Mid-trajectory shows a transient s14 dip (33%) as microglia removes
+load-bearing weak synapses; the network recovers to 92% by s15 via
+compensatory sprouting + STDP retuning — biologically realistic
+pruning-window pattern (Stiles & Jernigan 2010).
 
 ## Dependency graph
 
@@ -263,9 +262,27 @@ expanding if baseline holds.
 
 ---
 
-## Phase 1 — Hard prerequisite (after Pack P-lite v2)
+## Phase 1 — Hard prerequisite (LANDED)
 
-### Pack ZZ — Microglial pruning
+### Pack ZZ — Microglial pruning [LANDED at 6de27d1]
+
+**Status**: v1 + v2 reverted; v3 LANDED (commit `6de27d1`). Lifetime sweep
+91.7% s15.
+
+**What shipped**: silence-age criterion (synapse silent for >900 steps AND
+weight <0.10 AND consolidation_tag <0.05 AND not permanent AND post.role !=
+OUTPUT) with per-region cap 1, warm-up 2500 steps. Eat-me / don't-eat-me
+fields are wired and persisted but not currently the trigger; available
+for a future tag-based variant.
+
+The v1 / v2 attempts used eat_me_tag accumulation as the criterion and
+both regressed (50% / 75% s15). The simpler silence-age path proved more
+stable in tuning — the tag accumulator over-counts on synapses that
+deliver but rarely cause fires (which is most of them in a sparse
+network), while raw silence captures the "genuinely unused" signal more
+directly.
+
+### Pack ZZ - reference (original design preserved below)
 
 **Status**: planned. Hard prerequisite for *every* organ-adding pack
 (Pack 26-A, 26-B, 26-C). Pack 26-A.tune was reverted four times because
@@ -796,7 +813,7 @@ warrant a focused investigation pack rather than feature work.
 | ----- | ---- | :--: | :--------: |
 | 0a | Pack P-lite v1 (event-driven dispatch) | LANDED | — |
 | 0a | Pack P-lite v2 (parallel workers)      | LANDED | — |
-| 1  | Pack ZZ (microglial pruning)           | 1–2    | 1–2     |
+| 1  | Pack ZZ (microglial pruning)           | LANDED | —       |
 | 1' | Pack M  (morphology templates)         | 1.5–2  | 2.5–4   |
 | A | Pack 26-A.tune retry                    | 1      | 3.5–5   |
 | A | Pack 26-B (visual)                      | 1.5    | 5–6.5   |
