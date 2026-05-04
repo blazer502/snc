@@ -13,15 +13,15 @@ the per-pack failure record lives in
 
 ## Live baseline
 
-**Phase 1 morphology refactor** (commit `cc9bf4e`) — **100% accuracy at every
-session 1..15** (12/12 perfect recall throughout the sweep). The
-`synaptogenesis_phase` now requires AXON × DENDRITE pairings (not arbitrary
-NEURON × NEURON), matching how real cortical chemical synapses form. Each
-neuron is born with a real 3D morphology (Pack M v2), sheds redundant
-synapses (Pack ZZ v3), and connects via biologically-meaningful axon-of-pre
-/ dendrite-of-post contacts only. Synapse count is frozen at ~265 (the
-hand-installed labelled-line priors); spurious synaptogenesis is gated off
-by the role check.
+**Phase 1' expansion** (commit `d0246f2`) — **100% accuracy at every session
+1..15** (12/12 perfect recall throughout the sweep). Builds on Phase 1's
+AXON × DENDRITE rule. Each cell type now gets a realistic 3D arborisation
+grounded in primary literature: pyramidal (apical + 4 basal dendrites,
+descending axon), PV basket (4 lateral axons + 2 dendrites), SST
+Martinotti (2-voxel ascending axon, bipolar dendrites), VIP (bipolar
+lateral axon, lateral dendrites). Synapse count grows organically from
+~265 to ~290 over 15 sessions via biologically-meaningful axon-dendrite
+contacts.
 
 ## Dependency graph
 
@@ -862,7 +862,7 @@ warrant a focused investigation pack rather than feature work.
 | 1  | Pack ZZ (microglial pruning)           | LANDED | —       |
 | 1' | Pack M v2 (morphology, BLOCKED stamps) | LANDED | —       |
 | 2  | Phase 1 morphology refactor (AXON×DEND)| LANDED | —       |
-| 2' | Phase 1 expansion (multi-voxel arbors) | 1–2    | 1–2     |
+| 2' | Phase 1' (multi-voxel arborisations)   | LANDED | —       |
 | A | Pack 26-A.tune retry (after Phase 1)    | 1      | 4       |
 | A | Pack 26-B (visual)                      | 1.5    | 5.5     |
 | A | Pack 26-C (motor speech)                | 2–3    | 7.5–8.5 |
