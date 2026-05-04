@@ -382,7 +382,20 @@ class Simulator {
   // Place exactly one neuron at the given voxel and return its id. Returns 0
   // if the voxel is out of bounds or already occupied. Used by training
   // demos to place INPUT / OUTPUT neurons at chosen anatomical locations.
+  // Pack M: after the soma is placed the cell's polarity / role -default
+  // morphology template is stamped via `stamp_morphology`. Callers that
+  // change polarity / role afterwards trigger a re-stamp from inside
+  // `set_polarity` / `set_role`.
   uint32_t add_neuron_at(int x, int y, int z);
+
+  // Stamp the polarity / role -appropriate MorphologyTemplate around a
+  // neuron's soma. Idempotent: clears any previously-stamped non-soma
+  // body / BLOCKED voxels owned by this cell first, then re-stamps the
+  // template currently appropriate for its polarity + role. Voxels out
+  // of bounds or already occupied are silently skipped -- a structural
+  // fault during real development behaves the same way. Returns the
+  // number of voxels actually placed (excluding the soma).
+  int stamp_morphology(uint32_t neuron_id);
 
   // Set or query a neuron's polarity (Dale's principle). By default seeded
   // neurons are EXCITATORY; use this to designate the ~20% GABAergic pool

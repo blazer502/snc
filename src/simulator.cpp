@@ -488,6 +488,10 @@ void Simulator::seed_fetal(const FetalSeed& f) {
 void Simulator::set_polarity(uint32_t neuron_id, NeuronPolarity pol) {
   if (neuron_id == 0 || neuron_id > neurons_.size()) return;
   neurons_[neuron_id - 1].polarity = pol;
+  // Pack M: re-stamp morphology since each polarity has a distinct
+  // shape (PV's perisomatic axonal arbor vs SST's ascending axon
+  // vs pyramidal's apical dendrite, etc.).
+  stamp_morphology(neuron_id);
 }
 
 void Simulator::randomize_polarity(float inhibitory_fraction) {
@@ -567,6 +571,111 @@ void Simulator::set_branch_passive_gain(uint32_t neuron_id, uint8_t branch,
   nu.branch_passive_gain[branch] = gain;
 }
 
+// ---- Pack M: morphology templates per cell type ---------------------------
+//
+// Each template gives the cell a tiny, biologically-oriented 3D shape
+// stamped at birth. v2 starts with 1-voxel templates (apical / lateral
+// hint per polarity) since Pack M v1 with 1-voxel templates regressed
+// against the pre-Pack-ZZ 75% baseline by 1 word; with Pack ZZ active
+// the substrate sheds surplus synapses and the same templates may now
+// fit. Larger templates can be tried after this lands.
+namespace {
+
+// v2 stamps the morphology voxel as BLOCKED rather than NEURON. Real
+// neurites are dendrite / axon-specific (only axon-dendrite contacts
+// form synapses), but the existing `synaptogenesis_phase` treats all
+// NEURON voxels equivalently. Stamping as BLOCKED makes the tissue
+// exist (the cell occupies the voxel) without adding synaptogenesis-
+// eligible contact points -- closer to the role=2 axon-trunk semantic
+// in the documented Phase 1 morphology-refactor plan. When the
+// AXON x DENDRITE distinction is implemented at synaptogenesis time
+// (a Phase 1 inversion, see docs/MORPHOLOGY_REFACTOR.md), the role=0
+// dendrite stamps can come back.
+constexpr MorphologyVoxel kMorphPyramidal[] = {
+    { 0, 0,  1, /*AXON_TRUNK / BLOCKED*/ 2},   // apical hint (+z)
+};
+constexpr MorphologyVoxel kMorphPv[] = {
+    { 1, 0,  0, /*AXON_TRUNK*/ 2},              // perisomatic lateral
+};
+constexpr MorphologyVoxel kMorphSst[] = {
+    { 0, 0,  1, /*AXON_TRUNK*/ 2},              // ascending
+};
+constexpr MorphologyVoxel kMorphVip[] = {
+    { 0,  1, 0, /*AXON_TRUNK*/ 2},              // lateral
+};
+
+MorphologyTemplate morphology_for(NeuronPolarity pol, NeuronRole role) {
+  // INPUT / OUTPUT cells use hand-installed labelled-line synapses
+  // tuned against the single-voxel baseline; adding morphology around
+  // them creates spurious NEURON-NEURON contacts that synaptogenesis
+  // turns into noise. Skip them in v2.
+  if (role == NeuronRole::INPUT || role == NeuronRole::OUTPUT) {
+    return {nullptr, 0};
+  }
+  switch (pol) {
+    case NeuronPolarity::INHIBITORY:
+      return {kMorphPv,   static_cast<int>(std::size(kMorphPv))};
+    case NeuronPolarity::INHIBITORY_SST:
+      return {kMorphSst,  static_cast<int>(std::size(kMorphSst))};
+    case NeuronPolarity::INHIBITORY_VIP:
+      return {kMorphVip,  static_cast<int>(std::size(kMorphVip))};
+    case NeuronPolarity::EXCITATORY:
+    default:
+      return {kMorphPyramidal,
+              static_cast<int>(std::size(kMorphPyramidal))};
+  }
+}
+
+}  // namespace
+
+int Simulator::stamp_morphology(uint32_t neuron_id) {
+  if (neuron_id == 0 || neuron_id > neurons_.size()) return 0;
+  Neuron& nu = neurons_[neuron_id - 1];
+  // Idempotent: first clear any previously-stamped non-soma body /
+  // BLOCKED voxels still owned by this cell. Sprouted voxels (post
+  // simulation steps) would also be cleared here, but `set_role` /
+  // `set_polarity` are normally called immediately after
+  // `add_neuron_at` before any sprouting has run.
+  for (auto it = nu.body.begin(); it != nu.body.end();) {
+    if (it->x == nu.soma.x && it->y == nu.soma.y &&
+        it->z == nu.soma.z) {
+      ++it;
+      continue;
+    }
+    if (grid_.in_bounds(it->x, it->y, it->z)) {
+      grid_.set(it->x, it->y, it->z, BrainGrid::EMPTY);
+      owner_[lin(it->x, it->y, it->z)] = 0;
+    }
+    it = nu.body.erase(it);
+  }
+  const MorphologyTemplate t = morphology_for(nu.polarity, nu.role);
+  int placed = 0;
+  for (int i = 0; i < t.n; ++i) {
+    const MorphologyVoxel& v = t.voxels[i];
+    const int x = nu.soma.x + v.dx;
+    const int y = nu.soma.y + v.dy;
+    const int z = nu.soma.z + v.dz;
+    if (!grid_.in_bounds(x, y, z)) continue;
+    if (grid_.get(x, y, z) != BrainGrid::EMPTY) continue;
+    if (v.role == 2) {
+      // Axon-trunk: BLOCKED state. Conducts but does not form
+      // synapses. Owned by this neuron but NOT in `body` so
+      // sprouting iterators skip it.
+      grid_.set(x, y, z, BrainGrid::BLOCKED);
+      owner_[lin(x, y, z)] = nu.id;
+    } else {
+      // Dendrite or axon: NEURON state, eligible for synaptogenesis.
+      grid_.set(x, y, z, BrainGrid::NEURON);
+      owner_[lin(x, y, z)] = nu.id;
+      nu.body.push_back({static_cast<int16_t>(x),
+                          static_cast<int16_t>(y),
+                          static_cast<int16_t>(z)});
+    }
+    ++placed;
+  }
+  return placed;
+}
+
 uint32_t Simulator::add_neuron_at(int x, int y, int z) {
   Neuron neu;
   neu.id = static_cast<uint32_t>(neurons_.size() + 1);
@@ -578,6 +687,11 @@ uint32_t Simulator::add_neuron_at(int x, int y, int z) {
   neurons_.push_back(std::move(neu));
   // Soft cortical-map prior on the just-pushed neuron.
   apply_position_prior(neurons_.back());
+  // Pack M: stamp the polarity / role -default morphology so the cell
+  // is born with a real shape, not a single voxel. Callers that change
+  // polarity / role afterwards trigger a re-stamp from inside
+  // `set_polarity` / `set_role`.
+  stamp_morphology(static_cast<uint32_t>(neurons_.size()));
   return static_cast<uint32_t>(neurons_.size());
 }
 
@@ -591,6 +705,9 @@ void Simulator::set_role(uint32_t neuron_id, NeuronRole role, int channel) {
   Neuron& nu = neurons_[neuron_id - 1];
   nu.role = role;
   nu.channel = channel;
+  // Pack M: re-stamp morphology since INPUT / OUTPUT cells use a
+  // different (currently empty) template than INTERNAL.
+  stamp_morphology(neuron_id);
 }
 
 void Simulator::apply_input_pattern(const float* features, int n_features) {

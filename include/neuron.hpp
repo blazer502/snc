@@ -152,6 +152,30 @@ enum class NeuronPolarity : uint8_t {
   INHIBITORY_VIP  = 3,  // VIP (disinhibits SST)
 };
 
+// Pack M: per-cell-type 3D morphology stamped at neuron birth so that
+// `Neuron::body` is *the set of "1" voxels forming the cell's actual
+// shape* -- not just a single soma voxel that sprouting later expands
+// as a random blob. The 2-bit grid was always intended to support real
+// neuronal morphology (Markram 2015 *Cell*; Ascoli 2007 *J. Neurosci.*);
+// Pack M makes that implicit guarantee explicit. With Pack ZZ active,
+// microglial pruning sheds the small surplus that morphology adds, so
+// the stamps fit under the substrate budget.
+//
+// `dx/dy/dz` are integer offsets relative to the soma. `role`:
+//   0 DENDRITE   -- NEURON-state voxel, can become SYNAPSE on contact
+//   1 AXON       -- NEURON-state voxel, can become SYNAPSE on contact
+//   2 AXON_TRUNK -- BLOCKED-state voxel, conducts but does NOT form
+//                   synapses (myelinated trunk analogue)
+struct MorphologyVoxel {
+  int8_t dx, dy, dz;
+  uint8_t role;
+};
+
+struct MorphologyTemplate {
+  const MorphologyVoxel* voxels;
+  int n;
+};
+
 struct Neuron {
   uint32_t id = 0;          // 1-based; 0 is reserved for "no owner"
   Voxel soma{0, 0, 0};
