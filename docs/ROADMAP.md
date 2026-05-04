@@ -13,17 +13,14 @@ the per-pack failure record lives in
 
 ## Live baseline
 
-**Pack 26-A.tune.lite — cochlear pathway** (commit `8dfd007`) —
-**100% accuracy across 25 sessions, 20/20 perfect recall in pure-review.**
-After 5 prior reverts pre-Phase-1, the cochlear pathway finally lands.
-Architecture: 8 cochlea bins → 8 A1 cells (direct, weight 0.55 delay 13);
-A1 → motor plastic at weight 0.0 (no homeostatic drag) grown organically
-by STDP. Phase 1's AXON × DENDRITE rule prevents spurious organic
-A1↔motor contacts -- the missing prerequisite that broke every prior
-attempt. The brain now hears the word spoken (Peterson-Barney 1952
-formants over Greenwood 1990 log-frequency cochlear bins) in parallel
-with the symbolic label drive. 20 words, 8 semantic groups (people,
-objects, greetings, response, action, numbers, colours).
+**Pack 26-C.tune.lite — motor speech** (commit `d4b2c36`) —
+**100% accuracy across 25 sessions, 20/20 perfect recall in pure-review**,
+with auditory (Pack 26-A) + visual (Pack 26-B) + motor speech (Pack 26-C)
+all active. The brain hears words spoken (Peterson-Barney 1952 formants
+over Greenwood 1990 cochlea), sees them (Hubel & Wiesel 1962 V1
+orientation-tuned receptive fields), and produces distinct articulator
+trajectories per word (DIVA-template; 5 articulators × 1-2 firings per
+word's dominant phonemes). 20 words, 8 semantic groups.
 
 ## Dependency graph
 
@@ -799,6 +796,198 @@ combinatorial space → simple syntax emerges from sequential STDP on premotor.
 
 ---
 
+## Phase T — Pack TREE: branching dendritic-tree topology
+
+### Pack TREE — neurons as actual tree-like structures
+
+**Status**: planned. The user observed:
+
+> Currently, neurons are represented by 1 bit, so they are depicted at
+> the lowest resolution compared to their actual structure. To
+> represent more complex and non-linear structures, neurons must
+> extend outward like tree roots, rather than using 1 bit, just like
+> the actual structure.
+
+**Why**: today's `Neuron::body` is `std::vector<Voxel>` — a flat list
+of (x, y, z) positions. Each voxel is binary "this is part of the
+neuron / it isn't"; there's no parent-child branching topology, no
+proximal-vs-distal distinction, no thickness gradient. Real
+dendritic and axonal arbours are **trees**: a primary trunk
+branching into secondary branches, each branching further, with
+thickness tapering toward the leaves. Pack M v2 + Phase 1' stamp
+these voxels at birth, but the *graph* of which voxel is the parent
+of which doesn't exist yet — the tree is implicit in the relative
+positions of stamped voxels and any branching that emerges via
+sprouting is undirected.
+
+Pack TREE replaces flat `body` with an explicit branch graph.
+
+### Mechanism
+
+Replace `std::vector<Voxel> body` with `std::vector<BranchNode> body`:
+
+```cpp
+struct BranchNode {
+  Voxel    pos;                    // (x, y, z) in the grid
+  uint8_t  role;                   // DENDRITE / AXON / AXON_TRUNK
+  uint16_t parent_idx;             // index into Neuron::body, 0 = soma
+                                    // (UINT16_MAX = no parent / root)
+  uint8_t  depth;                  // tree-edges from soma
+  uint8_t  thickness;              // 255 at trunk, decreasing distally
+};
+```
+
+Construction:
+
+1. **Stamp**: morphology templates (Pack M v2 / Phase 1') gain explicit
+   `parent_idx` and `depth` per voxel. Soma is `body[0]` with
+   `parent_idx = UINT16_MAX, depth = 0, thickness = 255`. Each
+   stamped voxel records its parent (typically the soma for the
+   first morphology layer; subsequent layers point to nearer voxels).
+2. **Sprout**: `sprouting_phase` chooses a parent voxel from the
+   current tree's leaves (highest depth, lowest thickness) and
+   extends a new BranchNode as that voxel's child. Depth increments;
+   thickness decrements (e.g., `parent.thickness * 0.85`). Real
+   biology: distal dendrites are thinner because actin / microtubule
+   transport falls off with distance.
+3. **Prune**: deterministic spine retraction prefers high-depth,
+   low-thickness leaves first — modelling the fact that distal
+   spines are the most frequently lost during developmental pruning
+   and the easiest for microglia to engulf.
+
+### Behavioural / scientific value
+
+- **Synaptogenesis routing**: `synaptogenesis_phase` can derive the
+  post's dendritic branch index from the contact voxel's tree
+  position (apical apical-tuft → branch 0, basal → branch 1, oblique
+  → branch 2). The current `synaptogenesis_default_branch` config
+  becomes obsolete because the branch index is anatomically
+  determined.
+- **Conduction-delay accuracy**: today's delay = Manhattan distance
+  from soma. With a real tree, delay = sum of edge lengths along the
+  branch path (longer for distal contacts because the path winds
+  through the tree). Matches real cortical conduction.
+- **Microglial pruning v4**: Pack ZZ's eat-me tag growth multiplied
+  by `(thickness_max - thickness)/thickness_max` — distal thin
+  branches accumulate eat-me faster, matching Stiles & Jernigan
+  2010 adolescent-pruning observations.
+- **Visualisation**: `dump_csv` emits parent_idx so visualisation
+  scripts render actual neuron shapes (not just voxel blobs). The
+  brain's morphology becomes inspectable at a glance.
+
+### Implementation steps
+
+1. Add `BranchNode` struct in `neuron.hpp`, replacing the
+   `body` field. Soma is always `body[0]`.
+2. `stamp_morphology` populates the tree from template — each
+   morphology voxel carries its parent_idx (soma for first ring,
+   nearest first-ring voxel for second ring, etc.).
+3. `sprouting_phase` picks parent from leaves (current: random
+   body voxel) and decrements thickness on extension.
+4. `pruning_phase` and `microglia_phase` use depth + thickness as
+   priority scores.
+5. `synaptogenesis_phase` derives post's branch index from the
+   contact voxel's depth / role.
+6. `dump_csv` emits parent_idx so scripts/render_anatomy.py can
+   draw actual trees.
+7. Save format bump to SNC12 (BranchNode is bigger than Voxel).
+8. Verify lifetime sweep ≥ 100% s25 with all current packs active.
+
+### Risks
+
+- **Save-format break**: SNC11 brains can't load. Mitigate with a
+  one-shot migration that synthesises depth=0 / parent_idx=0 for
+  legacy bodies.
+- **Memory footprint**: BranchNode is ~10 bytes vs Voxel's 6 bytes.
+  At 500 cells × 6 voxels each = 3000 nodes × 10 bytes = 30 KB.
+  Negligible.
+- **Sprouting / pruning behaviour shift**: current uniform-random
+  sprouting becomes leaf-biased. May change baseline dynamics.
+  Tunable via a config flag (uniform vs leaf-biased) for safe
+  rollout.
+- **Synaptogenesis branch routing**: changes which dendritic branch
+  receives newly-formed synapses. May affect engram dynamics.
+  Mitigation: keep existing `synaptogenesis_default_branch` as a
+  fallback when the contact voxel has no clear branch identity
+  (depth = 0, etc.).
+
+### Estimated effort
+
+3–5 days. The data-structure change touches ~20 call sites; the
+behavioural changes (sprouting, pruning, synaptogenesis routing)
+each need their own A/B verification. Risk-managed by feature-flag
+gating each behavioural change.
+
+### Slot in roadmap
+
+After Phase A organs (LANDED) and Phase B diagnostics + predictive
+coding. Pack TREE deepens the **structural** side of the simulator
+by giving every neuron a real branching shape, complementing Phase 1
++ Phase 1' which gave them axon-vs-dendrite roles. With Pack TREE
+in place, a future visualisation pass can show the brain as a
+forest of tree-like cells rather than the current voxel blobs —
+matching the user's vision: "neurons must extend outward like tree
+roots, just like the actual structure."
+
+---
+
+## Phase Φ — Consciousness deliberation loop (USER-TRIGGERED)
+
+### Pack Φ — continuous deliberation loop
+
+**Status**: planned, USER-TRIGGERED. The user has indicated this should
+sit in the remaining plan and be ordered when they ask. Discussion
+document at `docs/DISCUSSION_CONSCIOUSNESS.md`.
+
+**Why**: the simulator is currently mostly reactive (input → cascade →
+output). Real cortex has continuous internal dynamics — a deliberation
+loop that runs even without external input, sustained by a designated
+workspace population, attention selection, and predict-then-compare
+cycles. Pack Φ implements that loop using the simulator's existing
+biological constraints (energy, engram protection, AXON × DENDRITE
+chemistry, microglia, spatial niches).
+
+**Mechanism** (sketch — full design in
+`docs/DISCUSSION_CONSCIOUSNESS.md`):
+
+1. **Workspace population (GNW)**: ~12–20 high-degree connector hub
+   neurons identified via Pack 27 diagnostics. Tagged
+   `is_workspace = true`, given a small intrinsic-bias drive each step,
+   exempt from microglial pruning.
+2. **Continuous deliberation phase**: a new `deliberation_phase()`
+   runs every step regardless of external input. Picks the dominant
+   engram (highest mean `fire_rate_ema`), amplifies it, predicts its
+   sensory consequences (Pack 28 hook), compares to actual input,
+   updates.
+3. **Φ-proxy gate**: only allow workspace cells to broadcast when
+   local Φ exceeds threshold (Pack 27 measures it). Sub-threshold
+   deliberation is "subliminal" — no behavioural effect.
+
+**Prerequisites**: Pack 27 (network diagnostics), Pack 28 (hierarchical
+predictive coding). MVP is achievable without Pack 27/28 but with
+reduced fidelity.
+
+**What you'd observe**: the brain shows non-zero workspace activity
+even with no external input; `imagine` becomes self-sustaining;
+`status` between probes reveals the dominant engram the brain is
+currently "thinking about". Sleep replay automatically includes
+deliberation trajectories from the day.
+
+**Caveats**: this is a functional / mechanistic model, not a
+metaphysical one. We do not claim hard-problem consciousness; we
+claim functional signatures (workspace ignition, integrated
+information, predictive coding loops) that the literature treats as
+correlates of consciousness in real brains.
+
+**Estimated effort**: 2 days for MVP (workspace + bias + deliberation
+period, no Φ-gate, no prediction). 3–5 days with full Pack 27 + 28
+integration.
+
+**Slot**: after Pack 26-C-full closes the I/O loop, after Pack 27 +
+28 land, before or alongside Pack 29. Triggered by user request.
+
+---
+
 ## Phase D — Beyond pre-adolescent
 
 ### Pack 30+ (sketch)
@@ -867,11 +1056,14 @@ warrant a focused investigation pack rather than feature work.
 | 2' | Phase 1' (multi-voxel arborisations)   | LANDED | —       |
 | 2'' | Vocab expansion 12 -> 16 (numbers)    | LANDED | —       |
 | A | Pack 26-A.tune.lite (cochlear)          | LANDED | —       |
-| A | Pack 26-B (visual)                      | 1.5    | 5.5     |
-| A | Pack 26-C (motor speech)                | 2–3    | 7.5–8.5 |
-| B | Pack 27 (diagnostics)                   | 1      | 8.5–9.5 |
-| B | Pack 28 (predictive coding)             | 1–2    | 9.5–11.5|
-| C | Pack 29 (counting + 2-word)             | 3–5    | 12.5–16.5 |
+| A | Pack 26-B.tune.lite (visual V1)         | LANDED | —       |
+| A | Pack 26-C.tune.lite (motor speech)      | LANDED | —       |
+| A' | Pack 26-C-full (closed-loop articulator → cochlea)| 1.5 | 1.5 |
+| B | Pack 27 (network diagnostics)           | 1      | 2.5     |
+| B | Pack 28 (predictive coding for INTERNAL)| 1–2    | 3.5–4.5 |
+| C | Pack 29 (counting + 2-word)             | 3–5    | 6.5–9.5 |
+| T | Pack TREE — branching dendritic-tree topology | 3–5 | — |
+| Φ | Pack Φ — consciousness deliberation loop (user-triggered) | 2–5 | — |
 
 **Total to user-directive-4 goal**: ~2.5–3.5 weeks of focused work,
 assuming no compounding regressions. Pack ZZ comes first because the

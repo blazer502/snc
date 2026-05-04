@@ -131,6 +131,62 @@ constexpr int kA1ChannelBase = 9400;
 // connections that fire coincident with motor activity during shows.
 constexpr int kV1Neurons     = 8;
 constexpr int kV1ChannelBase = 9500;
+
+// Pack 26-C.tune.lite: motor speech via premotor sequencer + 5
+// articulators (Tourville & Guenther 2011 DIVA-model template,
+// simplified). Each word's motor cell fires its dedicated premotor,
+// which in turn fires the 1-2 articulators that produce the word's
+// dominant phonemes. Output: a temporal trajectory of articulator
+// fire rates per word -- the brain produces a motor program, not
+// just an argmax-of-current.
+constexpr int kArticulators = 5;
+constexpr int kArticulatorChannelBase = 9600;
+constexpr int kPremotorChannelBase    = 9700;
+// Articulator indices: 0 jaw, 1 tongue_tip, 2 tongue_body, 3 lips,
+// 4 glottis. Two articulators per word for richer programs.
+constexpr int kArticulatorPattern[kClasses][2] = {
+    /* mom    /mɑm/   */ {3, 0},   // lips, jaw
+    /* dad    /dæd/   */ {1, 0},   // tongue_tip, jaw
+    /* baby   /beɪbi/ */ {3, 0},
+    /* ball   /bɔl/   */ {3, 1},
+    /* dog    /dɔɡ/   */ {1, 2},
+    /* cat    /kæt/   */ {2, 1},
+    /* hi     /haɪ/   */ {4, 0},   // glottis, jaw
+    /* bye    /baɪ/   */ {3, 0},
+    /* yes    /jɛs/   */ {2, 1},
+    /* no     /noʊ/   */ {1, 0},
+    /* more   /mɔr/   */ {3, 1},
+    /* stop   /stɑp/  */ {1, 3},
+    /* one    /wʌn/   */ {3, 1},
+    /* two    /tu/    */ {1, 0},
+    /* three  /θri/   */ {1, 1},
+    /* four   /fɔr/   */ {3, 1},
+    /* red    /rɛd/   */ {1, 0},
+    /* green  /ɡrin/  */ {2, 1},
+    /* blue   /blu/   */ {3, 1},
+    /* yellow /jɛloʊ/ */ {2, 1},
+};
+const char* kArticulatorName[kArticulators] = {
+    "jaw", "tng_tip", "tng_bod", "lips", "glott"
+};
+
+// Pack 26-C-full: closed-loop articulator -> cochlea. Each
+// articulator's firing drives 1-2 cochlear bins corresponding to its
+// rough phonemic frequency profile, so the brain hears its own
+// articulator activations as sound (corollary discharge / efference
+// copy). With 8-bin cochlea (200..4000 Hz log-frequency):
+//   jaw       low vowel formant F1                 -> bins 0, 1
+//   tongue_tip high consonant fricative noise      -> bins 6, 7
+//   tongue_body mid formant                        -> bins 3, 4
+//   lips      bilabial low                         -> bins 1, 2
+//   glottis   voicing fundamental                  -> bin 0
+constexpr int kArticulatorCochleaBin[kArticulators][2] = {
+    /* jaw       */ {0, 1},
+    /* tongue_tip*/ {6, 7},
+    /* tongue_bod*/ {3, 4},
+    /* lips      */ {1, 2},
+    /* glottis   */ {0, -1},   // -1 = no second bin
+};
 // Per-V1-cell receptive field over the 16-pixel retina:
 //   v1[0..3] = horizontal row detectors (rows 0..3)
 //   v1[4..7] = vertical column detectors (cols 0..3)
@@ -334,6 +390,9 @@ struct Brain {
   std::vector<uint32_t> a1;                 // 8 INTERNAL primary auditory
   // Pack 26-B.tune.lite: visual pathway.
   std::vector<uint32_t> v1;                 // 8 INTERNAL V1 simple cells
+  // Pack 26-C.tune.lite: motor speech.
+  std::vector<uint32_t> articulators;       // 5 INTERNAL articulator cells
+  std::vector<uint32_t> premotors;          // kClasses INTERNAL premotor cells
   std::vector<bool> skip_noise;
   std::mt19937 rng;
   // Last episode bookkeeping (for `correct` / `wrong`).
@@ -412,6 +471,8 @@ void rebuild_index(Brain& b) {
   b.cochlea.assign(kCochleaBins, 0);
   b.a1.assign(kA1Neurons, 0);
   b.v1.assign(kV1Neurons, 0);
+  b.articulators.assign(kArticulators, 0);
+  b.premotors.assign(kClasses, 0);
   b.inhibitors.clear();
   for (const auto& nu : b.sim.neurons()) {
     if (nu.role == snc::NeuronRole::INPUT) {
@@ -439,6 +500,12 @@ void rebuild_index(Brain& b) {
       } else if (ch >= kV1ChannelBase &&
                  ch < kV1ChannelBase + kV1Neurons) {
         b.v1[ch - kV1ChannelBase] = nu.id;
+      } else if (ch >= kArticulatorChannelBase &&
+                 ch < kArticulatorChannelBase + kArticulators) {
+        b.articulators[ch - kArticulatorChannelBase] = nu.id;
+      } else if (ch >= kPremotorChannelBase &&
+                 ch < kPremotorChannelBase + kClasses) {
+        b.premotors[ch - kPremotorChannelBase] = nu.id;
       }
     }
   }
@@ -450,9 +517,11 @@ void rebuild_index(Brain& b) {
   for (uint32_t id : b.selfs)    if (id < b.skip_noise.size()) b.skip_noise[id] = true;
   for (uint32_t id : b.motors)   if (id < b.skip_noise.size()) b.skip_noise[id] = true;
   for (uint32_t id : b.image_in) if (id < b.skip_noise.size()) b.skip_noise[id] = true;
-  for (uint32_t id : b.cochlea)  if (id < b.skip_noise.size()) b.skip_noise[id] = true;
-  for (uint32_t id : b.a1)       if (id < b.skip_noise.size()) b.skip_noise[id] = true;
-  for (uint32_t id : b.v1)       if (id < b.skip_noise.size()) b.skip_noise[id] = true;
+  for (uint32_t id : b.cochlea)      if (id < b.skip_noise.size()) b.skip_noise[id] = true;
+  for (uint32_t id : b.a1)           if (id < b.skip_noise.size()) b.skip_noise[id] = true;
+  for (uint32_t id : b.v1)           if (id < b.skip_noise.size()) b.skip_noise[id] = true;
+  for (uint32_t id : b.articulators) if (id < b.skip_noise.size()) b.skip_noise[id] = true;
+  for (uint32_t id : b.premotors)    if (id < b.skip_noise.size()) b.skip_noise[id] = true;
   for (const auto& nu : b.sim.neurons()) {
     const bool inh = nu.polarity != snc::NeuronPolarity::EXCITATORY;
     if (inh && nu.id < b.skip_noise.size())
@@ -669,6 +738,75 @@ void build_anatomy(Brain& b) {
   for (int i = 0; i < kV1Neurons; ++i) {
     for (int c = 0; c < kClasses; ++c) {
       sim.install_synapse(b.v1[i], b.motors[c], 0.0f, 4, 1, 0.0f);
+    }
+  }
+
+  // Pack 26-C.tune.lite (post-Phase-1): motor speech via premotor +
+  // articulator. 5 articulator cells (jaw / tongue_tip / tongue_body
+  // / lips / glottis) at the high-z fringe; one premotor cell per
+  // word at z=Z-5 (just below motor cortex). motor[c] -> premotor[c]
+  // -> articulators[ kArticulatorPattern[c] ] all permanent
+  // labelled-line. The brain's output is now a TEMPORAL motor
+  // program (which articulators fire when motor[c] fires), not just
+  // an argmax-of-motor-rates.
+  const int art_x = 4;
+  const int art_y0 = 2;
+  for (int i = 0; i < kArticulators; ++i) {
+    const int x = art_x;
+    const int y = art_y0 + i * 4;
+    const uint32_t id = place_or_nearby(x, y, Z - 2);
+    if (!id) { std::fprintf(stderr, "articulator %d failed near (%d,%d,%d)\n",
+                             i, x, y, Z - 2); std::exit(1); }
+    sim.set_role(id, snc::NeuronRole::INTERNAL,
+                 kArticulatorChannelBase + i);
+    sim.set_polarity(id, snc::NeuronPolarity::EXCITATORY);
+    b.articulators.push_back(id);
+  }
+  // Premotor cells: one per word, placed just below the
+  // corresponding motor cluster. Same 2x10 stride-6 layout as
+  // motors, at z = Z - 5.
+  for (int c = 0; c < kClasses; ++c) {
+    const int col = c % 10;
+    const int row = c / 10;
+    const int xp = 4 + col * 6;
+    const int yp = (Y / 2 - 8) + row * 16;
+    const uint32_t id = place_or_nearby(xp, yp, Z - 5);
+    if (!id) { std::fprintf(stderr, "premotor %d failed near (%d,%d,%d)\n",
+                             c, xp, yp, Z - 5); std::exit(1); }
+    sim.set_role(id, snc::NeuronRole::INTERNAL,
+                 kPremotorChannelBase + c);
+    sim.set_polarity(id, snc::NeuronPolarity::EXCITATORY);
+    b.premotors.push_back(id);
+  }
+  // motor[c] -> premotor[c]: permanent labelled-line, weight 0.55,
+  // delay 2. Branch 0 so it lands on the dendritic-spike-eligible
+  // branch (n_branches=1 default for premotor).
+  for (int c = 0; c < kClasses; ++c) {
+    sim.install_synapse(b.motors[c], b.premotors[c], 0.55f, 2, 0, 1.0f);
+  }
+  // premotor[c] -> articulator[i] for each (c, i) in
+  // kArticulatorPattern[c]. Weight 0.55 permanent labelled-line.
+  for (int c = 0; c < kClasses; ++c) {
+    for (int k = 0; k < 2; ++k) {
+      const int art_idx = kArticulatorPattern[c][k];
+      if (art_idx < 0 || art_idx >= kArticulators) continue;
+      sim.install_synapse(b.premotors[c], b.articulators[art_idx],
+                          0.55f, 2, 0, 1.0f);
+    }
+  }
+  // Pack 26-C-full: closed-loop articulator -> cochlea. The brain
+  // hears its own articulator firings via permanent labelled-line
+  // links from each articulator to the cochlear bins that match
+  // its rough phonemic frequency profile. Combined with the
+  // existing cochlea -> A1 -> motor pathway (Pack 26-A), this
+  // closes the speech loop: motor -> premotor -> articulators ->
+  // cochlea -> A1 -> motor (corollary discharge analogue).
+  for (int i = 0; i < kArticulators; ++i) {
+    for (int k = 0; k < 2; ++k) {
+      const int bin = kArticulatorCochleaBin[i][k];
+      if (bin < 0 || bin >= kCochleaBins) continue;
+      sim.install_synapse(b.articulators[i], b.cochlea[bin],
+                          0.55f, 2, 0, 1.0f);
     }
   }
 
@@ -1149,8 +1287,25 @@ void cmd_say(Brain& b, const std::string& concept) {
   float rates[kClasses];
   b.sim.read_output(rates, kClasses);
   const float self_r = b.sim.neurons()[b.selfs[c] - 1].fire_rate_ema;
+  // Pack 26-C.tune.lite: read the articulator trajectory. The motor
+  // cell's spike fires its premotor (delay 2) which fires the
+  // word's 1-2 articulators (delay 2). The articulator
+  // `fire_rate_ema` after the say episode summarises the brain's
+  // speech motor program.
+  float art_rate[kArticulators] = {0};
+  for (int i = 0; i < kArticulators; ++i) {
+    if (b.articulators[i] > 0 &&
+        b.articulators[i] <= b.sim.neuron_count()) {
+      art_rate[i] = b.sim.neurons()[b.articulators[i] - 1].fire_rate_ema;
+    }
+  }
   say("[say] motor_%s=%.2f  self_%s=%.2f (predicted away)\n",
       concept.c_str(), rates[c], concept.c_str(), self_r);
+  say("[articulator] %s -> ", concept.c_str());
+  for (int i = 0; i < kArticulators; ++i) {
+    say("%s:%.2f ", kArticulatorName[i], art_rate[i]);
+  }
+  say("\n");
 }
 
 void cmd_hear(Brain& b, const std::string& concept) {
