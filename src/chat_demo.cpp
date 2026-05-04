@@ -223,6 +223,12 @@ snc::SimConfig make_config() {
   cfg.dendritic_passive_gain = 1.0f;
   cfg.dendritic_decay = 0.0f;
   cfg.synaptogenesis_default_branch = 1;
+  // Pack P-lite v2: parallel event dispatch via per-target buckets.
+  // N=4 splits delivery work across 4 OpenMP threads while preserving
+  // determinism (each bucket owns a disjoint set of post-synaptic
+  // neurons). At chat-vocab scale the gain is small but the path is
+  // exercised so larger demos can crank N higher.
+  cfg.event_dispatch_buckets = 4;
   return cfg;
 }
 

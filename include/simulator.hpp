@@ -163,6 +163,19 @@ struct SimConfig {
   float norepinephrine_level = 0.0f;
   float serotonin_level = 1.0f;
 
+  // Pack P-lite v2 (event-driven dispatch parallelism). The
+  // event_dispatch_phase partitions delivery events by
+  // `target_neuron % event_dispatch_buckets` so each bucket's events
+  // write to a disjoint set of post-synaptic neurons. OpenMP runs
+  // the buckets in parallel; within a bucket, events are processed
+  // sequentially in their original order so floating-point
+  // accumulation on `branch_potential` is deterministic. Setting
+  // `event_dispatch_buckets = 1` disables parallelism (single-threaded
+  // dispatch -- exactly equivalent to Pack P-lite v1). Default 1
+  // since at the chat-vocab scale (~400 neurons) the sequential path
+  // dominates; raise this on the pre-adolescent 128x128x96 grid.
+  int event_dispatch_buckets = 1;
+
   // Aversive-learning amplification. Real brains weight punishment more
   // strongly than equivalent reward (negativity bias). When
   // `apply_aversive` is called, the per-synapse weight change is
@@ -773,7 +786,7 @@ class Simulator {
     uint32_t target_neuron;   // post id, cached for fast lookup
     uint8_t  branch;          // post-synaptic branch
     float    magnitude;       // signed: inhibitory polarity already flipped
-    Voxel    pos;              // synapse voxel for energy / astrocyte
+    Voxel    pos;             // synapse voxel for energy / astrocyte
   };
   std::vector<std::vector<DeliveryEvent>> delivery_ring_;
   static constexpr int kDeliveryRingSize = 64;  // > any conduction delay
