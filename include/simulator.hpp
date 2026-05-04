@@ -711,18 +711,21 @@ class Simulator {
            static_cast<std::size_t>(z) * cfg_.X * cfg_.Y;
   }
 
-  // Per-step pipeline. The synaptic transmission has been factored into
-  // four explicit queue stages (incoming -> integrate -> dispatch ->
-  // scheduler). Pruning is *not* a probabilistic decision -- it is the
-  // deterministic structural consequence of weights driven below the spine
-  // retraction floor by STDP, homeostatic scaling and slow decay.
+  // Per-step pipeline. Pack P-lite (event-driven dispatch): when a neuron
+  // fires, `fire_dispatch_phase` pushes one DeliveryEvent per outgoing
+  // synapse into a circular ring buffer indexed by
+  // `(step + conduction_delay) % ring_size`. Each step,
+  // `event_dispatch_phase` pulls the events scheduled for the current
+  // step, delivers them to their post-synaptic neurons, and applies
+  // STDP-LTD locally. Replaces the per-synapse `transit` queue: work is
+  // now proportional to spike traffic instead of total synapse count.
   //
   //   integrate_incoming_phase   queue 1 -> potential
   //   chemistry_phase            potential -> fire decision
   //   stdp_phase                 LTP from this-step post-firings
   //                              + eligibility kick for reward learning
-  //   fire_dispatch_phase        fire -> queue 4 (energy-gated)
-  //   scheduler_dispatch_phase   queue 4 -> queue 1, plus LTD on delivery
+  //   fire_dispatch_phase        fire -> ring[step + delay] (energy-gated)
+  //   event_dispatch_phase       ring[step] -> queue 1, plus LTD on delivery
   //   homeostatic_phase          per-post synaptic scaling
   //   pruning_phase              spine retraction: weight < floor -> remove
   void integrate_incoming_phase();
@@ -730,7 +733,7 @@ class Simulator {
   void stdp_phase();
   void heterosynaptic_phase();
   void fire_dispatch_phase();
-  void scheduler_dispatch_phase();
+  void event_dispatch_phase();    // Pack P-lite: replaces scheduler_dispatch
   void homeostatic_phase();
   void sprouting_phase();
   void synaptogenesis_phase();
@@ -754,6 +757,26 @@ class Simulator {
   std::vector<uint32_t> owner_;
 
   std::vector<Neuron> neurons_;
+
+  // Pack P-lite: event-driven spike dispatch. When a neuron fires,
+  // each outgoing synapse generates a DeliveryEvent that is pushed
+  // into the ring slot `(step + syn.conduction_delay) % ring.size()`.
+  // The next time the simulator reaches that step, `event_dispatch`
+  // pulls the events and processes them. This is the analogue of
+  // real cortex: a fired neuron generates spike traffic that travels
+  // the connectome as discrete events, instead of every synapse
+  // being scanned every step. Ring size must exceed the maximum
+  // conduction delay used by any synapse.
+  struct DeliveryEvent {
+    uint32_t pre_id;          // 1-based; 0 = invalid
+    uint32_t syn_idx;         // index into pre.outgoing
+    uint32_t target_neuron;   // post id, cached for fast lookup
+    uint8_t  branch;          // post-synaptic branch
+    float    magnitude;       // signed: inhibitory polarity already flipped
+    Voxel    pos;              // synapse voxel for energy / astrocyte
+  };
+  std::vector<std::vector<DeliveryEvent>> delivery_ring_;
+  static constexpr int kDeliveryRingSize = 64;  // > any conduction delay
 
   // Position-binned aggregate features (refreshed on demand).
   std::unordered_map<int64_t, PositionFeatures> position_features_;
