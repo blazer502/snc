@@ -63,11 +63,29 @@ def bootstrap_cmds() -> list[str]:
     return cmds
 
 
-def train_cmds(rows) -> list[str]:
+def train_cmds(rows, mode: str = "multimodal") -> list[str]:
+    """Build the training command sequence.
+
+    Modes:
+      multimodal -- ``image_teach`` (label + voice + image)
+      visual     -- ``image_teach_visual`` (image + motor prime only)
+      curriculum -- first half multimodal, second half visual-only.
+                    Mirrors how children attach a label first, then
+                    refine the visual category through repeated
+                    exposures without naming.
+    """
     cmds = []
+    n = len(rows)
+    half = n // 2
     for i, (label, pixels) in enumerate(rows):
         pixel_str = " ".join(str(p) for p in pixels)
-        cmds.append(f"image_teach {label} {pixel_str}")
+        if mode == "visual":
+            verb = "image_teach_visual"
+        elif mode == "curriculum":
+            verb = "image_teach" if i < half else "image_teach_visual"
+        else:
+            verb = "image_teach"
+        cmds.append(f"{verb} {label} {pixel_str}")
         cmds.append("correct")
         if (i + 1) % 20 == 0:
             cmds.append("sleep 30 20")
@@ -140,6 +158,9 @@ def main(argv):
     p.add_argument("--save", type=Path, default=Path("mnist_brain.snc"))
     p.add_argument("--no-bootstrap", action="store_true")
     p.add_argument("--no-train", action="store_true")
+    p.add_argument("--mode", choices=("multimodal", "visual", "curriculum"),
+                   default="multimodal",
+                   help="training mode (Pack V-tune)")
     args = p.parse_args(argv[1:])
 
     train_rows = read_csv(DATA_DIR / "mnist_train.csv")
@@ -159,8 +180,10 @@ def main(argv):
 
     # Phase 2: train on MNIST images + voice + label
     if not args.no_train:
-        print(f"[mnist] phase 2: train {len(train_rows)} samples")
-        out = run_chat(load_path, args.save, train_cmds(train_rows))
+        print(f"[mnist] phase 2: train {len(train_rows)} samples "
+              f"(mode={args.mode})")
+        out = run_chat(load_path, args.save,
+                       train_cmds(train_rows, mode=args.mode))
         load_path = args.save
 
     # Phase 3: test (visual-only)
@@ -180,7 +203,7 @@ def main(argv):
     #             multimodal binding produced *some* signal even if it
     #             can't yet beat overlapping engrams)
     print()
-    print("=== MNIST 4-class results (digits 1..4) ===")
+    print(f"=== MNIST 4-class results (digits 1..4)  mode={args.mode} ===")
     for mode in ("open", "forced"):
         correct = 0
         per_class_total = Counter()
