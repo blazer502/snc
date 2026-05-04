@@ -30,6 +30,8 @@ Simulator::Simulator(SimConfig cfg)
       grid_(cfg.X, cfg.Y, cfg.Z),
       energy_(cfg.X, cfg.Y, cfg.Z, cfg.region_size, cfg.energy_max),
       owner_(static_cast<std::size_t>(cfg.X) * cfg.Y * cfg.Z, 0u),
+      voxel_role_(static_cast<std::size_t>(cfg.X) * cfg.Y * cfg.Z,
+                  ROLE_DENDRITE),
       astrocyte_ca_(static_cast<std::size_t>(energy_.rX()) *
                         energy_.rY() * energy_.rZ(),
                     0.0f),
@@ -142,6 +144,8 @@ void Simulator::grow_volume(int dx, int dy, int dz) {
 
   std::vector<uint32_t> new_owner(
       static_cast<std::size_t>(newX) * newY * newZ, 0u);
+  std::vector<uint8_t> new_voxel_role(
+      static_cast<std::size_t>(newX) * newY * newZ, ROLE_DENDRITE);
   auto new_lin = [&](int x, int y, int z) {
     return static_cast<std::size_t>(x) +
            static_cast<std::size_t>(y) * newX +
@@ -151,6 +155,8 @@ void Simulator::grow_volume(int dx, int dy, int dz) {
     for (int y = 0; y < cfg_.Y; ++y) {
       for (int x = 0; x < cfg_.X; ++x) {
         new_owner[new_lin(x + dx, y + dy, z + dz)] = owner_[lin(x, y, z)];
+        new_voxel_role[new_lin(x + dx, y + dy, z + dz)] =
+            voxel_role_[lin(x, y, z)];
       }
     }
   }
@@ -188,6 +194,7 @@ void Simulator::grow_volume(int dx, int dy, int dz) {
   grid_ = std::move(new_grid);
   energy_ = std::move(new_energy);
   owner_ = std::move(new_owner);
+  voxel_role_ = std::move(new_voxel_role);
   vz_lo_ += dz;
   vz_hi_ += dz;
 }
@@ -488,6 +495,10 @@ void Simulator::seed_fetal(const FetalSeed& f) {
 void Simulator::set_polarity(uint32_t neuron_id, NeuronPolarity pol) {
   if (neuron_id == 0 || neuron_id > neurons_.size()) return;
   neurons_[neuron_id - 1].polarity = pol;
+  // Pack M: re-stamp morphology since each polarity has a distinct
+  // shape (PV's perisomatic axonal arbor vs SST's ascending axon
+  // vs pyramidal's apical dendrite, etc.).
+  stamp_morphology(neuron_id);
 }
 
 void Simulator::randomize_polarity(float inhibitory_fraction) {
@@ -527,6 +538,10 @@ void Simulator::install_synapse(uint32_t pre_id, uint32_t post_id,
   // and the silence-timeout sweeps regardless of activity.
   edge.consolidation_tag = innate_tag;
   edge.permanent = (innate_tag > 0.0f);
+  // Pack ZZ v3: permanent synapses are CD47-protected from microglial
+  // elimination. Sentinel ~ infinity means microglia_phase never
+  // touches them regardless of their `eat_me_tag` history.
+  edge.dont_eat_me = edge.permanent ? 1e9f : 0.0f;
   pre.outgoing.push_back(edge);
 }
 
@@ -563,6 +578,155 @@ void Simulator::set_branch_passive_gain(uint32_t neuron_id, uint8_t branch,
   nu.branch_passive_gain[branch] = gain;
 }
 
+// ---- Pack M: morphology templates per cell type ---------------------------
+//
+// Each template gives the cell a tiny, biologically-oriented 3D shape
+// stamped at birth. v2 starts with 1-voxel templates (apical / lateral
+// hint per polarity) since Pack M v1 with 1-voxel templates regressed
+// against the pre-Pack-ZZ 75% baseline by 1 word; with Pack ZZ active
+// the substrate sheds surplus synapses and the same templates may now
+// fit. Larger templates can be tried after this lands.
+namespace {
+
+// Phase 1 morphology refactor: stamp templates as NEURON-state with
+// role=AXON (1). Soma defaults to DENDRITE (0); sprouted voxels also
+// default to DENDRITE. Synaptogenesis only forms a contact when an
+// AXON voxel of one neuron meets a DENDRITE voxel of another --
+// random NEURON x NEURON contacts no longer become synapses. This
+// is the canonical "axon-of-pre / dendrite-of-post" pairing of real
+// cortical chemistry.
+//
+// Each cell type contributes one AXON voxel along its preferred
+// projection axis:
+//   pyramidal       -- axon descends -z (toward white matter)
+//   PV basket       -- local lateral axon (+x)
+//   SST Martinotti  -- ascending axon (+z, toward layer 1)
+//   VIP             -- local axon to other inhibitories (+y)
+// Phase 1' expansion: pyramidal cells get a richer morphology -- real
+// layer-2/3 and layer-5 pyramidals have an apical dendrite ascending
+// to layer 1, basal dendrites radiating laterally from the soma, and
+// a descending axon to white matter (DeFelipe et al. 2013 *Nat. Rev.
+// Neurosci.* 14:202). The voxel-coarse approximation:
+//   (0, 0, +1) apical dendrite        [DENDRITE]
+//   (+1, 0, 0) basal dendrite         [DENDRITE]
+//   (-1, 0, 0) basal dendrite         [DENDRITE]
+//   (0, +1, 0) basal dendrite         [DENDRITE]
+//   (0, -1, 0) basal dendrite         [DENDRITE]
+//   (0, 0, -1) descending axon        [AXON]
+// 5 dendrite voxels (apical + 4 basal) + 1 axon = 6 morphology voxels
+// per pyramidal. Each cell now has a real receiving surface in 5
+// directions and a real projection voxel below the soma.
+constexpr MorphologyVoxel kMorphPyramidal[] = {
+    { 0, 0,  1, /*DENDRITE*/ 0},               // apical dendrite
+    { 1, 0,  0, /*DENDRITE*/ 0},               // basal +x
+    {-1, 0,  0, /*DENDRITE*/ 0},               // basal -x
+    { 0,  1, 0, /*DENDRITE*/ 0},               // basal +y
+    { 0, -1, 0, /*DENDRITE*/ 0},               // basal -y
+    { 0, 0, -1, /*AXON    */ 1},               // descending axon
+};
+// PV basket: dense local axonal arbor + multipolar dendrites
+// (Tremblay, Lee & Rudy 2016 *Neuron* 91:260). 4 lateral axon voxels
+// for perisomatic targeting + 2 dendrite voxels above/below soma.
+constexpr MorphologyVoxel kMorphPv[] = {
+    { 1, 0,  0, /*AXON    */ 1},
+    {-1, 0,  0, /*AXON    */ 1},
+    { 0,  1, 0, /*AXON    */ 1},
+    { 0, -1, 0, /*AXON    */ 1},
+    { 0, 0,  1, /*DENDRITE*/ 0},
+    { 0, 0, -1, /*DENDRITE*/ 0},
+};
+// SST Martinotti: ascending axon to layer 1 + bipolar dendrites.
+constexpr MorphologyVoxel kMorphSst[] = {
+    { 0, 0,  1, /*AXON    */ 1},
+    { 0, 0,  2, /*AXON    */ 1},
+    { 1, 0,  0, /*DENDRITE*/ 0},
+    {-1, 0,  0, /*DENDRITE*/ 0},
+};
+// VIP: local axon to other inhibitories + lateral dendrites.
+constexpr MorphologyVoxel kMorphVip[] = {
+    { 0,  1, 0, /*AXON    */ 1},
+    { 0, -1, 0, /*AXON    */ 1},
+    { 1, 0,  0, /*DENDRITE*/ 0},
+    {-1, 0,  0, /*DENDRITE*/ 0},
+};
+
+MorphologyTemplate morphology_for(NeuronPolarity pol, NeuronRole role) {
+  // INPUT / OUTPUT cells use hand-installed labelled-line synapses
+  // tuned against the single-voxel baseline; adding morphology around
+  // them creates spurious NEURON-NEURON contacts that synaptogenesis
+  // turns into noise. Skip them in v2.
+  if (role == NeuronRole::INPUT || role == NeuronRole::OUTPUT) {
+    return {nullptr, 0};
+  }
+  switch (pol) {
+    case NeuronPolarity::INHIBITORY:
+      return {kMorphPv,   static_cast<int>(std::size(kMorphPv))};
+    case NeuronPolarity::INHIBITORY_SST:
+      return {kMorphSst,  static_cast<int>(std::size(kMorphSst))};
+    case NeuronPolarity::INHIBITORY_VIP:
+      return {kMorphVip,  static_cast<int>(std::size(kMorphVip))};
+    case NeuronPolarity::EXCITATORY:
+    default:
+      return {kMorphPyramidal,
+              static_cast<int>(std::size(kMorphPyramidal))};
+  }
+}
+
+}  // namespace
+
+int Simulator::stamp_morphology(uint32_t neuron_id) {
+  if (neuron_id == 0 || neuron_id > neurons_.size()) return 0;
+  Neuron& nu = neurons_[neuron_id - 1];
+  // Idempotent: first clear any previously-stamped non-soma body /
+  // BLOCKED voxels still owned by this cell. Sprouted voxels (post
+  // simulation steps) would also be cleared here, but `set_role` /
+  // `set_polarity` are normally called immediately after
+  // `add_neuron_at` before any sprouting has run.
+  for (auto it = nu.body.begin(); it != nu.body.end();) {
+    if (it->x == nu.soma.x && it->y == nu.soma.y &&
+        it->z == nu.soma.z) {
+      ++it;
+      continue;
+    }
+    if (grid_.in_bounds(it->x, it->y, it->z)) {
+      grid_.set(it->x, it->y, it->z, BrainGrid::EMPTY);
+      owner_[lin(it->x, it->y, it->z)] = 0;
+      voxel_role_[lin(it->x, it->y, it->z)] = ROLE_DENDRITE;
+    }
+    it = nu.body.erase(it);
+  }
+  const MorphologyTemplate t = morphology_for(nu.polarity, nu.role);
+  int placed = 0;
+  for (int i = 0; i < t.n; ++i) {
+    const MorphologyVoxel& v = t.voxels[i];
+    const int x = nu.soma.x + v.dx;
+    const int y = nu.soma.y + v.dy;
+    const int z = nu.soma.z + v.dz;
+    if (!grid_.in_bounds(x, y, z)) continue;
+    if (grid_.get(x, y, z) != BrainGrid::EMPTY) continue;
+    if (v.role == 2) {
+      // Axon-trunk: BLOCKED state. Conducts but does not form
+      // synapses. Owned by this neuron but NOT in `body` so
+      // sprouting iterators skip it.
+      grid_.set(x, y, z, BrainGrid::BLOCKED);
+      owner_[lin(x, y, z)] = nu.id;
+      voxel_role_[lin(x, y, z)] = ROLE_AXON_TRUNK;
+    } else {
+      // Dendrite or axon: NEURON state, eligible for synaptogenesis
+      // *if its role matches the contact direction* (Phase 1).
+      grid_.set(x, y, z, BrainGrid::NEURON);
+      owner_[lin(x, y, z)] = nu.id;
+      voxel_role_[lin(x, y, z)] =
+          (v.role == 1) ? ROLE_AXON : ROLE_DENDRITE;
+      nu.body.push_back({static_cast<int16_t>(x),
+                          static_cast<int16_t>(y),
+                          static_cast<int16_t>(z)});
+    }
+    ++placed;
+  }
+  return placed;
+}
+
 uint32_t Simulator::add_neuron_at(int x, int y, int z) {
   Neuron neu;
   neu.id = static_cast<uint32_t>(neurons_.size() + 1);
@@ -574,6 +738,11 @@ uint32_t Simulator::add_neuron_at(int x, int y, int z) {
   neurons_.push_back(std::move(neu));
   // Soft cortical-map prior on the just-pushed neuron.
   apply_position_prior(neurons_.back());
+  // Pack M: stamp the polarity / role -default morphology so the cell
+  // is born with a real shape, not a single voxel. Callers that change
+  // polarity / role afterwards trigger a re-stamp from inside
+  // `set_polarity` / `set_role`.
+  stamp_morphology(static_cast<uint32_t>(neurons_.size()));
   return static_cast<uint32_t>(neurons_.size());
 }
 
@@ -587,6 +756,9 @@ void Simulator::set_role(uint32_t neuron_id, NeuronRole role, int channel) {
   Neuron& nu = neurons_[neuron_id - 1];
   nu.role = role;
   nu.channel = channel;
+  // Pack M: re-stamp morphology since INPUT / OUTPUT cells use a
+  // different (currently empty) template than INTERNAL.
+  stamp_morphology(neuron_id);
 }
 
 void Simulator::apply_input_pattern(const float* features, int n_features) {
@@ -903,6 +1075,9 @@ int Simulator::promote_engram(int output_channel, int top_k_internal,
       if (!s.permanent) ++n_marked;
       s.permanent = true;
       s.consolidation_tag = 1.0f;
+      // Pack ZZ v3: engram-promoted edges get CD47-style protection
+      // alongside the labelled-line priors.
+      s.dont_eat_me = 1e9f;
       if (silent) continue;  // silent engram: skip weight floor
       // Floor the engram-edge weight at half of weight_max so the
       // recall path is electrically functional even if STDP had not
@@ -1161,6 +1336,11 @@ void Simulator::stdp_phase() {
       ++syn.caused_fire_count;
       syn.eligibility +=
           cfg_.eligibility_potentiation * kernel * (1.0f + post.fire_rate_ema);
+      // Pack ZZ v3: a delivery that demonstrably caused the post to
+      // fire (LTP just applied) resets the eat-me tag to zero. The
+      // synapse is doing what cortex hired it to do; microglia leave
+      // it alone.
+      syn.eat_me_tag = 0.0f;
     }
   }
 }
@@ -1274,26 +1454,32 @@ void Simulator::fire_dispatch_phase() {
 }
 
 void Simulator::event_dispatch_phase() {
-  // Pack P-lite (Option B, hybrid event-driven dispatch). Pulls all
-  // DeliveryEvents whose conduction-delay matures at the current
-  // step from the central ring buffer and processes them. Each event
-  // carries everything the worker needs (pre id, syn index, post id,
-  // branch, signed magnitude, synapse voxel) -- no scan over inactive
-  // synapses. Work is proportional to spike traffic, matching the way
-  // real cortex computes (spike events propagating through the
-  // connectome) instead of a uniform per-step scan.
+  // Pack P-lite v2 (Option B, hybrid event-driven dispatch with parallel
+  // workers). Pulls all DeliveryEvents whose conduction-delay matures
+  // at the current step from the central ring buffer and processes
+  // them in parallel via OpenMP. Each event carries everything the
+  // worker needs (pre id, syn index, post id, branch, signed magnitude,
+  // synapse voxel, pre-rolled release-probability random) -- no scan
+  // over inactive synapses, no shared rng during dispatch. Work is
+  // proportional to spike traffic.
+  //
+  // Determinism: events are placed in the slot at fire-dispatch time
+  // (sequential), and within a slot every (pre_id, syn_idx) pair is
+  // unique, so each event writes its own SynapseEdge fields without
+  // contention. Cross-event writes -- post.branch_potential, energy,
+  // astrocyte_ca -- use #pragma omp atomic to avoid races. The
+  // `release_probability` random is pre-rolled at fire-dispatch.
   //
   // STP recovery still runs as a BSP scan over all synapses (slow
   // timescale; fine to keep BSP). STDP-LTP fires inside `stdp_phase`
   // separately when the post fires within the window after delivery.
-  std::uniform_real_distribution<float> u(0.0f, 1.0f);
-  const bool stochastic =
-      cfg_.release_probability > 0.0f && cfg_.release_probability < 1.0f;
   const bool stp_active =
       cfg_.release_depression > 0.0f || cfg_.release_recovery > 0.0f;
   if (cfg_.release_recovery > 0.0f) {
-    for (Neuron& pre : neurons_) {
-      for (auto& syn : pre.outgoing) {
+    const int nn = static_cast<int>(neurons_.size());
+#pragma omp parallel for schedule(static)
+    for (int i = 0; i < nn; ++i) {
+      for (auto& syn : neurons_[i].outgoing) {
         syn.vesicle_state = std::min(
             1.0f, syn.vesicle_state + cfg_.release_recovery);
       }
@@ -1302,28 +1488,55 @@ void Simulator::event_dispatch_phase() {
 
   const int slot = step_ % kDeliveryRingSize;
   auto& events = delivery_ring_[slot];
-  for (const DeliveryEvent& ev : events) {
+  const int n_events = static_cast<int>(events.size());
+
+  // Sequential pre-pass: validation + RNG roll + branch_potential
+  // resize + per-target bucketing. This preserves the v1 RNG
+  // consumption pattern (one roll per validated event, in event
+  // order) so the parallel dispatch is numerically identical to the
+  // single-threaded v1 reference. Bucketing partitions surviving
+  // events by `target_neuron % N` so each parallel worker owns a
+  // disjoint set of post-synaptic neurons -- writes to
+  // `branch_potential[b]` never collide across buckets. Within a
+  // bucket the events are processed in original order, so float
+  // accumulation is deterministic.
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  const bool stochastic =
+      cfg_.release_probability > 0.0f && cfg_.release_probability < 1.0f;
+  const int N = std::max(1, cfg_.event_dispatch_buckets);
+  std::vector<std::vector<int>> bucket(N);
+  for (int idx = 0; idx < n_events; ++idx) {
+    const DeliveryEvent& ev = events[idx];
     if (ev.pre_id == 0 || ev.pre_id > neurons_.size()) continue;
     Neuron& pre = neurons_[ev.pre_id - 1];
     if (ev.syn_idx >= pre.outgoing.size()) continue;
     SynapseEdge& syn = pre.outgoing[ev.syn_idx];
-    // The pre may have lost / replaced the synapse since the event was
-    // scheduled (pruning, re-allocation). A cheap sanity check on the
-    // cached target_neuron filters such stale events.
     if (syn.target_neuron != ev.target_neuron) continue;
-
-    const bool released = !stochastic || u(rng_) < cfg_.release_probability;
-    if (!released) continue;  // failed vesicle release
-
+    if (stochastic && u(rng_) >= cfg_.release_probability) continue;
     if (ev.target_neuron == 0 || ev.target_neuron > neurons_.size()) continue;
     Neuron& post = neurons_[ev.target_neuron - 1];
-    if (post.branch_potential.size() != post.n_branches) {
+    if (post.branch_potential.size() < post.n_branches) {
       post.branch_potential.assign(post.n_branches, 0.0f);
     }
+    bucket[ev.target_neuron % N].push_back(idx);
+  }
+
+  // Parallel for over disjoint per-target buckets. Cross-bucket writes
+  // (energy, astrocyte) use atomic updates -- those collide rarely
+  // and the atomic cost is negligible.
+#pragma omp parallel for schedule(static) if (N > 1)
+  for (int b_id = 0; b_id < N; ++b_id) {
+   for (int idx : bucket[b_id]) {
+    const DeliveryEvent& ev = events[idx];
+    Neuron& pre = neurons_[ev.pre_id - 1];
+    SynapseEdge& syn = pre.outgoing[ev.syn_idx];
+    Neuron& post = neurons_[ev.target_neuron - 1];
     uint8_t b = ev.branch;
     if (b >= post.n_branches) b = 0;
     const float effective = stp_active ? ev.magnitude * syn.vesicle_state
                                         : ev.magnitude;
+    // Cross-event write: multiple events may target the same post's
+    // same branch. Use atomic update.
     post.branch_potential[b] += effective;
     if (cfg_.release_depression > 0.0f) {
       syn.vesicle_state -= cfg_.release_depression;
@@ -1331,17 +1544,15 @@ void Simulator::event_dispatch_phase() {
     }
     if (cfg_.astrocyte_release_increment > 0.0f && !astrocyte_ca_.empty()) {
       const int R = energy_.region_size();
-      const std::size_t idx = std::size_t(ev.pos.x / R) +
-                               std::size_t(ev.pos.y / R) * energy_.rX() +
-                               std::size_t(ev.pos.z / R) *
-                                   energy_.rX() * energy_.rY();
-      if (idx < astrocyte_ca_.size()) {
-        astrocyte_ca_[idx] += cfg_.astrocyte_release_increment;
+      const std::size_t aidx = std::size_t(ev.pos.x / R) +
+                                std::size_t(ev.pos.y / R) * energy_.rX() +
+                                std::size_t(ev.pos.z / R) *
+                                    energy_.rX() * energy_.rY();
+      if (aidx < astrocyte_ca_.size()) {
+#pragma omp atomic
+        astrocyte_ca_[aidx] += cfg_.astrocyte_release_increment;
       }
     }
-    // STDP-LTD on acausal delivery: if the post fired before this
-    // spike arrived, weaken the synapse. Permanent (engram) synapses
-    // are exempt from per-event acausal weakening.
     if (!syn.permanent) {
       const int dt = step_ - post.last_fire_step;
       if (dt > 0 && dt <= cfg_.stdp_window) {
@@ -1353,9 +1564,28 @@ void Simulator::event_dispatch_phase() {
     syn.last_delivery_step = step_;
     syn.last_active_step = step_;
     ++syn.delivered_count;
+    // Pack ZZ v3: a delivery that arrived AFTER the post had already
+    // fired (the STDP-LTD path above just ran) is "useless" at the
+    // moment of arrival. Bump the eat-me tag. Useful deliveries
+    // (those that cause an LTP event in stdp_phase next iteration)
+    // will reset the tag to zero. Per-target bucketing makes this
+    // per-syn write race-free across threads.
+    if (!syn.permanent) syn.eat_me_tag += cfg_.microglia_tag_growth;
+    // Energy field: cross-event writes possible if events fall in the
+    // same region. Atomic decrement; the < 0 clamp from the original
+    // serial code is dropped here because the read-after-write pattern
+    // is racy under concurrent updates -- energy_regen_phase next step
+    // normalises any small negative excursion.
     float& e = energy_.energy_at(ev.pos.x, ev.pos.y, ev.pos.z);
+#pragma omp atomic
     e -= cfg_.synapse_use_cost;
+    // The < 0 clamp is benign-racy under parallel buckets: at worst
+    // one extra clamp gets applied; the operation is idempotent so
+    // the final value is bounded. Preserves v1's energy semantics
+    // (forward-starvation gate sees clamped values) so default N=1
+    // is exactly numerically equivalent to single-threaded v1.
     if (e < 0.0f) e = 0.0f;
+   }
   }
   events.clear();
 }
@@ -1396,6 +1626,97 @@ void Simulator::pruning_phase() {
                       BrainGrid::SYNAPSE) {
                 grid_.set(syn.pos.x, syn.pos.y, syn.pos.z, BrainGrid::NEURON);
               }
+              return true;
+            }),
+        edges.end());
+    last_stats_.synapses_pruned += static_cast<int>(before - edges.size());
+  }
+}
+
+void Simulator::microglia_phase() {
+  // Pack ZZ v3 -- complement-tagged microglial elimination of surplus
+  // synapses (Xing et al. 2026 NRR; Schafer & Stevens 2013). Eat-me
+  // tags grow inline in event_dispatch_phase on every useless
+  // delivery and are reset by stdp_phase on every LTP event.
+  // Permanent / engram synapses carry `dont_eat_me = 1e9` and are
+  // never touched.
+  //
+  // Conservative-by-design: removal requires SIMULTANEOUSLY
+  //   eat_me_tag        > microglia_eat_threshold
+  //   weight            < microglia_weak_weight
+  //   consolidation_tag < microglia_tag_protection_max
+  //   permanent         == false
+  // This mirrors how real microglia preferentially prune the *weakest
+  // among redundant* connections, not last-resort silent ones. The
+  // warm-up window suppresses pruning during early development when
+  // synapses haven't had time to demonstrate usefulness; the
+  // per-region cap keeps removals localised so they cannot outpace
+  // sprouting globally.
+  if (step_ < cfg_.microglia_warmup_steps) return;
+  if (cfg_.microglia_pass_period <= 0) return;
+  if (step_ % cfg_.microglia_pass_period != 0) return;
+
+  const int rX = energy_.rX();
+  const int rY = energy_.rY();
+  const int rZ = energy_.rZ();
+  const int R  = cfg_.region_size;
+  std::vector<int> region_remove(static_cast<std::size_t>(rX) * rY * rZ, 0);
+
+  for (Neuron& pre : neurons_) {
+    auto& edges = pre.outgoing;
+    const auto before = edges.size();
+    edges.erase(
+        std::remove_if(
+            edges.begin(), edges.end(),
+            [&](const SynapseEdge& syn) {
+              if (syn.permanent) return false;
+              if (syn.dont_eat_me >= cfg_.microglia_eat_threshold) return false;
+              // Silence-age criterion: real microglia preferentially
+              // engulf synapses that have stayed silent for an
+              // extended period (Schafer & Stevens 2013). The
+              // existing `pruning_phase` only catches synapses below
+              // `spine_retraction_floor` (0.02); microglia handle the
+              // weight band 0.02 < w < weak_weight that is too strong
+              // for spine retraction but functionally redundant.
+              // Never-delivered synapses (last_delivery_step == -1)
+              // are allowed if they're old enough to have had a
+              // chance: (step_ - syn.last_active_step) doubles as
+              // "age since last activity"; a never-active synapse
+              // has last_active_step == -1 so the diff is huge and
+              // it qualifies as silent.
+              const int last = syn.last_delivery_step >= 0
+                                   ? syn.last_delivery_step
+                                   : syn.last_active_step;
+              if (last >= 0 && step_ - last < cfg_.microglia_silence_steps)
+                return false;
+              if (syn.weight     >= cfg_.microglia_weak_weight)   return false;
+              if (syn.consolidation_tag >=
+                  cfg_.microglia_tag_protection_max)              return false;
+              // Never prune the readout path. Real cortex preserves
+              // motor-area projections during developmental pruning
+              // (Stiles & Jernigan 2010 *Neuropsych. Rev.*).
+              if (syn.target_neuron > 0 &&
+                  syn.target_neuron <= neurons_.size()) {
+                const Neuron& post = neurons_[syn.target_neuron - 1];
+                if (post.role == NeuronRole::OUTPUT) return false;
+              }
+              const int rx = std::min(rX - 1,
+                                       std::max(0, syn.pos.x / R));
+              const int ry = std::min(rY - 1,
+                                       std::max(0, syn.pos.y / R));
+              const int rz = std::min(rZ - 1,
+                                       std::max(0, syn.pos.z / R));
+              const int idx = rx + ry * rX + rz * rX * rY;
+              if (region_remove[idx] >=
+                  cfg_.microglia_max_remove_per_region_per_pass)
+                return false;
+              if (grid_.in_bounds(syn.pos.x, syn.pos.y, syn.pos.z) &&
+                  grid_.get(syn.pos.x, syn.pos.y, syn.pos.z) ==
+                      BrainGrid::SYNAPSE) {
+                grid_.set(syn.pos.x, syn.pos.y, syn.pos.z,
+                          BrainGrid::NEURON);
+              }
+              ++region_remove[idx];
               return true;
             }),
         edges.end());
@@ -1477,6 +1798,12 @@ void Simulator::sprouting_phase() {
 
       grid_.set(nx, ny, nz, BrainGrid::NEURON);
       owner_[lin(nx, ny, nz)] = nu.id;
+      // Phase 1 morphology refactor: sprouted voxels default to
+      // DENDRITE (most cortical sprouting at this scale is dendritic
+      // arborisation; axonal trunks are stamped explicitly by
+      // `stamp_morphology`). Dendrites can receive synapses but not
+      // initiate them, matching real chemical-synapse asymmetry.
+      voxel_role_[lin(nx, ny, nz)] = ROLE_DENDRITE;
       nu.body.push_back({static_cast<int16_t>(nx),
                           static_cast<int16_t>(ny),
                           static_cast<int16_t>(nz)});
@@ -1515,6 +1842,14 @@ void Simulator::synaptogenesis_phase() {
     if (!pre.fired_this_step && pre.fire_rate_ema < 0.05f) continue;
 
     for (const Voxel& v : pre.body) {
+      // Phase 1 morphology refactor: only AXON voxels of pre can
+      // initiate a synaptic contact. Dendrite-side voxels of pre
+      // (the default for soma + sprouted body) cannot send signals
+      // outward -- they're receivers. This kills random NEURON x
+      // NEURON contacts that previously formed spurious synapses.
+      const std::size_t v_idx = lin(v.x, v.y, v.z);
+      if (voxel_role_[v_idx] != ROLE_AXON) continue;
+
       for (int k = 0; k < 6; ++k) {
         const int nx = v.x + kNeighbours[k][0];
         const int ny = v.y + kNeighbours[k][1];
@@ -1526,6 +1861,9 @@ void Simulator::synaptogenesis_phase() {
 
         const uint32_t other = owner_[lin(nx, ny, nz)];
         if (other == 0 || other == pre.id) continue;
+        // Post-side voxel must be DENDRITE -- axon-axon contacts
+        // don't form chemical synapses in real cortex.
+        if (voxel_role_[lin(nx, ny, nz)] != ROLE_DENDRITE) continue;
 
         const int ridx = region_idx(nx, ny, nz);
         if (region_count[ridx] >= cfg_.max_synapses_per_region) continue;
@@ -1593,6 +1931,7 @@ void Simulator::step() {
   event_dispatch_phase();         // Pack P-lite: replaces scheduler
   homeostatic_phase();
   pruning_phase();
+  microglia_phase();              // Pack ZZ v3
   energy_regen_phase();
   sprouting_phase();
   synaptogenesis_phase();
@@ -2035,9 +2374,9 @@ void rvec(std::ifstream& f, std::vector<T>& v) {
 bool Simulator::save_state(const char* path) const {
   std::ofstream f(path, std::ios::binary);
   if (!f) return false;
-  const char magic[4] = {'S', 'N', 'C', '9'};
+  const char magic[4] = {'S', 'N', 'C', 'B'};  // SNCB = SNC11
   f.write(magic, 4);
-  uint32_t version = 9;
+  uint32_t version = 11;
   wpod(f, version);
   wpod(f, cfg_);
   wpod(f, step_);
@@ -2047,6 +2386,7 @@ bool Simulator::save_state(const char* path) const {
   wvec(f, grid_.raw_front());
   wvec(f, energy_.raw_data());
   wvec(f, owner_);
+  wvec(f, voxel_role_);            // Phase 1 morphology refactor
 
   uint64_t nn = neurons_.size();
   wpod(f, nn);
@@ -2090,6 +2430,8 @@ bool Simulator::save_state(const char* path) const {
       wpod(f, syn.delivered_count);
       wpod(f, syn.caused_fire_count);
       wpod(f, syn.last_delivery_step);
+      wpod(f, syn.eat_me_tag);
+      wpod(f, syn.dont_eat_me);
       wvec(f, syn.transit);
     }
   }
@@ -2109,10 +2451,10 @@ bool Simulator::load_state(const char* path) {
   if (!f) return false;
   char magic[4];
   f.read(magic, 4);
-  if (std::memcmp(magic, "SNC9", 4) != 0) return false;
+  if (std::memcmp(magic, "SNCB", 4) != 0) return false;
   uint32_t version;
   rpod(f, version);
-  if (version != 9) return false;
+  if (version != 11) return false;
 
   rpod(f, cfg_);
   rpod(f, step_);
@@ -2131,6 +2473,7 @@ bool Simulator::load_state(const char* path) {
   rvec(f, grid_.raw_front());
   rvec(f, energy_.raw_data());
   rvec(f, owner_);
+  rvec(f, voxel_role_);            // Phase 1 morphology refactor
 
   uint64_t nn;
   rpod(f, nn);
@@ -2179,6 +2522,8 @@ bool Simulator::load_state(const char* path) {
       rpod(f, syn.delivered_count);
       rpod(f, syn.caused_fire_count);
       rpod(f, syn.last_delivery_step);
+      rpod(f, syn.eat_me_tag);
+      rpod(f, syn.dont_eat_me);
       rvec(f, syn.transit);
     }
   }

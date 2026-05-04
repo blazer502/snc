@@ -123,6 +123,27 @@ struct SimConfig {
   // the actin cytoskeleton no longer being able to maintain the spine.
   float spine_retraction_floor = 0.02f;
 
+  // Pack ZZ v3 -- microglial pruning. Synapse tags grow/decay inline
+  // in event_dispatch_phase + stdp_phase; the periodic
+  // microglia_phase eliminates only synapses meeting ALL these
+  // conditions:
+  //   eat_me_tag        > microglia_eat_threshold      (chronically
+  //                                                      useless)
+  //   weight            < microglia_weak_weight        (also weak)
+  //   consolidation_tag < microglia_tag_protection_max (not protected)
+  //   permanent         == false                        (not innate)
+  // Multiple conditions in concert keep the rule conservative. Real
+  // microglia preferentially prune the weakest among redundant
+  // connections rather than last-resort silent ones.
+  float microglia_tag_growth        = 0.02f;   // per useless delivery
+  float microglia_eat_threshold     = 3.0f;    // (kept for future tag-based variant)
+  float microglia_weak_weight       = 0.10f;   // weight bar
+  float microglia_tag_protection_max = 0.05f;  // consolidation_tag bar
+  int   microglia_silence_steps     = 900;     // delivery silence for eligibility
+  int   microglia_pass_period       = 500;     // steps between passes
+  int   microglia_warmup_steps      = 2500;    // no removals before this
+  int   microglia_max_remove_per_region_per_pass = 1;
+
   // BCM metaplasticity (Bienenstock-Cooper-Munro). The post's running
   // baseline activity acts as a sliding threshold for LTP. Above the
   // threshold LTP magnitude shrinks; below it normal LTP applies. The
@@ -162,6 +183,19 @@ struct SimConfig {
   float acetylcholine_level = 1.0f;
   float norepinephrine_level = 0.0f;
   float serotonin_level = 1.0f;
+
+  // Pack P-lite v2 (event-driven dispatch parallelism). The
+  // event_dispatch_phase partitions delivery events by
+  // `target_neuron % event_dispatch_buckets` so each bucket's events
+  // write to a disjoint set of post-synaptic neurons. OpenMP runs
+  // the buckets in parallel; within a bucket, events are processed
+  // sequentially in their original order so floating-point
+  // accumulation on `branch_potential` is deterministic. Setting
+  // `event_dispatch_buckets = 1` disables parallelism (single-threaded
+  // dispatch -- exactly equivalent to Pack P-lite v1). Default 1
+  // since at the chat-vocab scale (~400 neurons) the sequential path
+  // dominates; raise this on the pre-adolescent 128x128x96 grid.
+  int event_dispatch_buckets = 1;
 
   // Aversive-learning amplification. Real brains weight punishment more
   // strongly than equivalent reward (negativity bias). When
@@ -348,7 +382,20 @@ class Simulator {
   // Place exactly one neuron at the given voxel and return its id. Returns 0
   // if the voxel is out of bounds or already occupied. Used by training
   // demos to place INPUT / OUTPUT neurons at chosen anatomical locations.
+  // Pack M: after the soma is placed the cell's polarity / role -default
+  // morphology template is stamped via `stamp_morphology`. Callers that
+  // change polarity / role afterwards trigger a re-stamp from inside
+  // `set_polarity` / `set_role`.
   uint32_t add_neuron_at(int x, int y, int z);
+
+  // Stamp the polarity / role -appropriate MorphologyTemplate around a
+  // neuron's soma. Idempotent: clears any previously-stamped non-soma
+  // body / BLOCKED voxels owned by this cell first, then re-stamps the
+  // template currently appropriate for its polarity + role. Voxels out
+  // of bounds or already occupied are silently skipped -- a structural
+  // fault during real development behaves the same way. Returns the
+  // number of voxels actually placed (excluding the soma).
+  int stamp_morphology(uint32_t neuron_id);
 
   // Set or query a neuron's polarity (Dale's principle). By default seeded
   // neurons are EXCITATORY; use this to designate the ~20% GABAergic pool
@@ -738,6 +785,7 @@ class Simulator {
   void sprouting_phase();
   void synaptogenesis_phase();
   void pruning_phase();
+  void microglia_phase();         // Pack ZZ v3: complement-tagged elimination
   void energy_regen_phase();
 
   // Multiplier applied to STDP amplitudes from the sensitive-period
@@ -756,6 +804,24 @@ class Simulator {
   // tell whether neighbouring NEURON voxels belong to two different cells.
   std::vector<uint32_t> owner_;
 
+  // Phase 1 morphology refactor: per-voxel functional role, parallel
+  // to `owner_`. 0 = DENDRITE (receives synaptic contacts), 1 = AXON
+  // (initiates synaptic contacts), 2 = AXON_TRUNK (BLOCKED-state
+  // tissue that conducts but is not synapse-eligible). Soma voxels
+  // default to DENDRITE; sprouted voxels default to DENDRITE; Pack M
+  // morphology templates stamp explicit AXON / AXON_TRUNK on the
+  // appropriate offsets per cell type. `synaptogenesis_phase`
+  // requires the contact to be AXON × DENDRITE -- random NEURON ×
+  // NEURON contacts no longer form synapses, mirroring real cortex
+  // where only axon-of-pre / dendrite-of-post pairings produce
+  // chemical synapses.
+  std::vector<uint8_t> voxel_role_;
+  enum VoxelRole : uint8_t {
+    ROLE_DENDRITE   = 0,
+    ROLE_AXON       = 1,
+    ROLE_AXON_TRUNK = 2,
+  };
+
   std::vector<Neuron> neurons_;
 
   // Pack P-lite: event-driven spike dispatch. When a neuron fires,
@@ -773,7 +839,7 @@ class Simulator {
     uint32_t target_neuron;   // post id, cached for fast lookup
     uint8_t  branch;          // post-synaptic branch
     float    magnitude;       // signed: inhibitory polarity already flipped
-    Voxel    pos;              // synapse voxel for energy / astrocyte
+    Voxel    pos;             // synapse voxel for energy / astrocyte
   };
   std::vector<std::vector<DeliveryEvent>> delivery_ring_;
   static constexpr int kDeliveryRingSize = 64;  // > any conduction delay

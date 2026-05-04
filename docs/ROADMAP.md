@@ -13,27 +13,39 @@ the per-pack failure record lives in
 
 ## Live baseline
 
-**Pack P-lite** (commit `3069085`) — **83.3% accuracy at session 15** (10/12)
-on the 12-word lifetime sweep. Event-driven spike dispatch via a central
-`DeliveryEvent` ring buffer; one event per outgoing synapse pushed at fire
-time, processed when the step matches the conduction delay. Replaces the
-per-synapse `transit` scan with O(spike-traffic) work per step. Pack 25.1
-features (CREB allocation, memory linking, silent-engram parameter,
-bias-overrides-niche) all still active.
+**Pack 26-A.tune.lite — cochlear pathway** (commit `8dfd007`) —
+**100% accuracy across 25 sessions, 20/20 perfect recall in pure-review.**
+After 5 prior reverts pre-Phase-1, the cochlear pathway finally lands.
+Architecture: 8 cochlea bins → 8 A1 cells (direct, weight 0.55 delay 13);
+A1 → motor plastic at weight 0.0 (no homeostatic drag) grown organically
+by STDP. Phase 1's AXON × DENDRITE rule prevents spurious organic
+A1↔motor contacts -- the missing prerequisite that broke every prior
+attempt. The brain now hears the word spoken (Peterson-Barney 1952
+formants over Greenwood 1990 log-frequency cochlear bins) in parallel
+with the symbolic label drive. 20 words, 8 semantic groups (people,
+objects, greetings, response, action, numbers, colours).
 
 ## Dependency graph
 
 ```
-                              Pack P-lite v2             (OPTIMISATION)
+                              Pack P-lite v2             (LANDED)
                               (parallel work queue)
                                 │
                                 ▼
-                              Pack ZZ                    (HARD prereq)
+                              Pack ZZ                    (LANDED)
                               (microglial pruning)
                                 │
                                 ▼
-                              Pack M                     (FOUNDATIONAL)
-                              (real neuron shapes)
+                              Pack M v2                  (LANDED)
+                              (real neuron shapes,
+                               BLOCKED-stamped)
+                                │
+                                ▼
+                              Phase 1 morphology refactor (HARD prereq
+                              (AXON × DENDRITE                  for organs)
+                               synaptogenesis,
+                               role-aware sprouting,
+                               docs/MORPHOLOGY_REFACTOR.md)
                                 │
                 ┌───────────────┼─────────────────┐
                 ▼               ▼                 ▼
@@ -61,11 +73,11 @@ bias-overrides-niche) all still active.
 
 ---
 
-## Phase 0a — Optimisation (already partially landed)
+## Phase 0a — Optimisation (LANDED)
 
 ### Pack P-lite v2 — OpenMP parallel workers over the delivery queue
 
-**Status**: v1 LANDED (commit `3069085`). v2 is an OpenMP layer on top.
+**Status**: v1 LANDED (`3069085`). v2 LANDED (`f4eec6a`).
 
 **Why**: v1 made spike dispatch event-driven and single-threaded (workers
 are sequential). v2 adds the parallel piece — workers pull from per-region
@@ -95,7 +107,33 @@ because partition is by post id, not by thread id.
 
 ---
 
-## Phase 0b was Pack M but reordered
+## Phase 1' — Pack M (real neuron shapes) [LANDED]
+
+**Status**: v1 reverted at 67% s15 (pre-Pack-ZZ). v2 LANDED at 91.7% s15
+(commit `34eb845`).
+
+**What shipped**: 1-voxel per-polarity templates stamped as BLOCKED
+(role=2 axon-trunk semantics) at neuron birth. `stamp_morphology` is
+idempotent and triggered automatically from `add_neuron_at`,
+`set_role`, `set_polarity`. INPUT / OUTPUT cells skipped (their
+labelled-line synapses are tuned against the single-voxel baseline).
+2-voxel templates regress to 83% so 1-voxel is the current fit.
+
+**The user's original encoding now realises its intent**:
+- "1" NEURON = part of a real neuron's morphology (soma + processes)
+- "2" SYNAPSE = contact between two neurons' "1" voxels
+- "3" BLOCKED = tissue that exists but isn't synapse-eligible
+                (now used for morphology stamps; will be specialised
+                further when Phase 1 refactor lands AXON × DENDRITE
+                synaptogenesis)
+
+**Phase 1 morphology-refactor work** (`docs/MORPHOLOGY_REFACTOR.md`)
+remains pending — when sprouting / synaptogenesis becomes
+morphology-aware, the templates can switch from role=2 BLOCKED back
+to role=0 DENDRITE / role=1 AXON and expand toward multi-voxel
+Markram-Blue-Brain shapes.
+
+## Phase 0b was Pack M but reordered (historical)
 
 **Pack M v1 attempted 2026-05-04 and reverted.** Even minimal templates
 (1 voxel per INTERNAL cell, INPUT/OUTPUT skipped) regressed the lifetime
@@ -262,9 +300,27 @@ expanding if baseline holds.
 
 ---
 
-## Phase 1 — Hard prerequisite (after Pack P-lite v2)
+## Phase 1 — Hard prerequisite (LANDED)
 
-### Pack ZZ — Microglial pruning
+### Pack ZZ — Microglial pruning [LANDED at 6de27d1]
+
+**Status**: v1 + v2 reverted; v3 LANDED (commit `6de27d1`). Lifetime sweep
+91.7% s15.
+
+**What shipped**: silence-age criterion (synapse silent for >900 steps AND
+weight <0.10 AND consolidation_tag <0.05 AND not permanent AND post.role !=
+OUTPUT) with per-region cap 1, warm-up 2500 steps. Eat-me / don't-eat-me
+fields are wired and persisted but not currently the trigger; available
+for a future tag-based variant.
+
+The v1 / v2 attempts used eat_me_tag accumulation as the criterion and
+both regressed (50% / 75% s15). The simpler silence-age path proved more
+stable in tuning — the tag accumulator over-counts on synapses that
+deliver but rarely cause fires (which is most of them in a sparse
+network), while raw silence captures the "genuinely unused" signal more
+directly.
+
+### Pack ZZ - reference (original design preserved below)
 
 **Status**: planned. Hard prerequisite for *every* organ-adding pack
 (Pack 26-A, 26-B, 26-C). Pack 26-A.tune was reverted four times because
@@ -358,7 +414,17 @@ struct SimConfig {
 
 ### Pack 26-A.tune (retry) — Cochlear pathway
 
-**Status**: blocked on Pack ZZ. Architecture playbook lives in
+**Status**: BLOCKED — 5 reverts. Pack ZZ + Pack M provide substrate
+headroom but the cochlear pathway introduces dynamic perturbations
+that destabilise the curriculum equilibrium. Real fix is Phase 1
+morphology refactor (AXON × DENDRITE synaptogenesis); see
+`docs/MORPHOLOGY_REFACTOR.md`.
+
+5th attempt (post-Pack-ZZ + Pack-M, 2026-05-04): with pre-wired
+A1→motor 75% s15, anatomy-only 67%, no-prewire-with-acoustic 50%.
+Pack M v2 baseline (91.7%) restored.
+
+The architecture playbook lives in
 `~/.claude/projects/-home-chanyoung-snc/memory/snc_pack26a_status.md`.
 
 **Why** (User Directive 1): the brain must receive sound through a simulated
@@ -794,15 +860,18 @@ warrant a focused investigation pack rather than feature work.
 | Phase | Pack | Days | Cumulative |
 | ----- | ---- | :--: | :--------: |
 | 0a | Pack P-lite v1 (event-driven dispatch) | LANDED | — |
-| 0a | Pack P-lite v2 (parallel workers)      | 0.5    | 0.5     |
-| 1  | Pack ZZ (microglial pruning)           | 1–2    | 1.5–2.5 |
-| 1' | Pack M  (morphology templates)         | 1.5–2  | 3–4.5   |
-| A | Pack 26-A.tune retry                    | 1      | 4–5.5   |
-| A | Pack 26-B (visual)                      | 1.5    | 5.5–7   |
-| A | Pack 26-C (motor speech)                | 2–3    | 7.5–10  |
-| B | Pack 27 (diagnostics)                   | 1      | 8.5–11  |
-| B | Pack 28 (predictive coding)             | 1–2    | 9.5–13  |
-| C | Pack 29 (counting + 2-word)             | 3–5    | 12.5–18 |
+| 0a | Pack P-lite v2 (parallel workers)      | LANDED | — |
+| 1  | Pack ZZ (microglial pruning)           | LANDED | —       |
+| 1' | Pack M v2 (morphology, BLOCKED stamps) | LANDED | —       |
+| 2  | Phase 1 morphology refactor (AXON×DEND)| LANDED | —       |
+| 2' | Phase 1' (multi-voxel arborisations)   | LANDED | —       |
+| 2'' | Vocab expansion 12 -> 16 (numbers)    | LANDED | —       |
+| A | Pack 26-A.tune.lite (cochlear)          | LANDED | —       |
+| A | Pack 26-B (visual)                      | 1.5    | 5.5     |
+| A | Pack 26-C (motor speech)                | 2–3    | 7.5–8.5 |
+| B | Pack 27 (diagnostics)                   | 1      | 8.5–9.5 |
+| B | Pack 28 (predictive coding)             | 1–2    | 9.5–11.5|
+| C | Pack 29 (counting + 2-word)             | 3–5    | 12.5–16.5 |
 
 **Total to user-directive-4 goal**: ~2.5–3.5 weeks of focused work,
 assuming no compounding regressions. Pack ZZ comes first because the

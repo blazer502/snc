@@ -187,14 +187,17 @@ def fig_queues():
 def fig_anatomy():
     fig, axes = plt.subplots(1, 2, figsize=(13, 5.2))
 
-    # Top-down (x, y) layout at the cortical floor / mid-depth
+    # Top-down (x, y) layout at the cortical floor / mid-depth.
+    # 20-word brain: 20 rows of 4 label INPUTs at z=2 (stride 3 in y),
+    # 4x4 image INPUTs at z=4, 2x10 motors at z=Z-3 (stride 6 in x).
     ax = axes[0]
-    ax.set_title("Top-down layout (toddler 64×64)\n"
+    ax.set_title("Top-down layout (toddler 64×64, 20-word brain)\n"
                  "INPUTs at z=2 / 4, motors at z=Z-3")
-    # ext_in: 12 rows × 4 cols at x=3..15, y=3..58 stride 5 (z=2)
-    for c in range(12):
+    n_classes = 20
+    # ext_in: 20 rows × 4 cols at y=3..60 stride 3 (z=2)
+    for c in range(n_classes):
         for f in range(4):
-            x = 3 + f * 4; y = 3 + c * 5
+            x = 3 + f * 4; y = 3 + c * 3
             ax.add_patch(plt.Rectangle((x - 0.4, y - 0.4), 0.8, 0.8,
                                         facecolor="#9ecae1",
                                         edgecolor="#3182bd", lw=0.5))
@@ -205,30 +208,30 @@ def fig_anatomy():
             ax.add_patch(plt.Rectangle((x - 0.4, y - 0.4), 0.8, 0.8,
                                         facecolor="#a1d99b",
                                         edgecolor="#31a354", lw=0.5))
-    # motors: 2 rows × 6 cols at xm=6..51, ym=Y/2-8 / +8 (z=Z-3)
-    for c in range(12):
-        col = c % 6; row = c // 6
-        xm = 6 + col * 9; ym = (32 - 8) + row * 16
+    # motors: 2 rows × 10 cols at xm=4..58 stride 6, ym=Y/2-8 / +8
+    for c in range(n_classes):
+        col = c % 10; row = c // 10
+        xm = 4 + col * 6; ym = (32 - 8) + row * 16
         ax.add_patch(plt.Circle((xm, ym), 0.8, facecolor="#fdae6b",
                                  edgecolor="#e6550d", lw=0.7))
-        ax.text(xm + 1.2, ym, "M", fontsize=7, color="#a04020")
+        ax.text(xm + 1.2, ym, "M", fontsize=6, color="#a04020")
     # niches: radius 9 around each motor
-    for c in range(12):
-        col = c % 6; row = c // 6
-        xm = 6 + col * 9; ym = (32 - 8) + row * 16
+    for c in range(n_classes):
+        col = c % 10; row = c // 10
+        xm = 4 + col * 6; ym = (32 - 8) + row * 16
         ax.add_patch(plt.Circle((xm, ym), 9, facecolor="none",
-                                 edgecolor="#e6550d", lw=0.5,
-                                 linestyle="--", alpha=0.6))
+                                 edgecolor="#e6550d", lw=0.4,
+                                 linestyle="--", alpha=0.4))
     ax.set_xlim(0, 64); ax.set_ylim(0, 64); ax.set_aspect("equal")
     ax.set_xlabel("x"); ax.set_ylabel("y")
     ax.grid(alpha=0.15)
     legend_handles = [
         mpatches.Patch(facecolor="#9ecae1", edgecolor="#3182bd",
-                       label="48 label INPUTs (z=2)"),
+                       label="80 label INPUTs (z=2)"),
         mpatches.Patch(facecolor="#a1d99b", edgecolor="#31a354",
                        label="16 image INPUTs (z=4)"),
         mpatches.Patch(facecolor="#fdae6b", edgecolor="#e6550d",
-                       label="12 motor OUTPUTs (z=Z-3)"),
+                       label="20 motor OUTPUTs (z=Z-3)"),
         mpatches.Patch(facecolor="none", edgecolor="#e6550d",
                        linestyle="--",
                        label="engram niches (r=9)"),

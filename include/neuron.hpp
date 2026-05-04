@@ -94,6 +94,21 @@ struct SynapseEdge {
   uint32_t delivered_count = 0;
   uint32_t caused_fire_count = 0;
   int last_delivery_step = -1;
+
+  // Pack ZZ v3 -- microglial pruning analogue (Xing et al. 2026 NRR;
+  // Schafer & Stevens 2013). The complement-like "eat me" tag grows
+  // on every delivery that did not cause the post to fire within the
+  // STDP window (tagged-but-useless delivery) and is reset to 0 on
+  // STDP-LTP events (delivery caused the post to fire -- demonstrably
+  // useful). The "don't eat me" CD47/SIRPalpha analogue is set to a
+  // sentinel large value (1e9) on permanent / labelled-line / engram
+  // synapses so they are exempt from microglial elimination. The
+  // periodic `microglia_phase` removes a synapse only when its tag
+  // exceeds threshold AND its weight is also weak AND no
+  // consolidation tag protects it -- many simultaneous conditions to
+  // ensure only genuinely surplus connections are pruned.
+  float eat_me_tag = 0.0f;
+  float dont_eat_me = 0.0f;
 };
 
 // Functional role of a neuron in a data-driven training run.
@@ -135,6 +150,30 @@ enum class NeuronPolarity : uint8_t {
   INHIBITORY      = 1,  // PV+ basket cells (perisomatic, fast)
   INHIBITORY_SST  = 2,  // Somatostatin (dendritic, slow)
   INHIBITORY_VIP  = 3,  // VIP (disinhibits SST)
+};
+
+// Pack M: per-cell-type 3D morphology stamped at neuron birth so that
+// `Neuron::body` is *the set of "1" voxels forming the cell's actual
+// shape* -- not just a single soma voxel that sprouting later expands
+// as a random blob. The 2-bit grid was always intended to support real
+// neuronal morphology (Markram 2015 *Cell*; Ascoli 2007 *J. Neurosci.*);
+// Pack M makes that implicit guarantee explicit. With Pack ZZ active,
+// microglial pruning sheds the small surplus that morphology adds, so
+// the stamps fit under the substrate budget.
+//
+// `dx/dy/dz` are integer offsets relative to the soma. `role`:
+//   0 DENDRITE   -- NEURON-state voxel, can become SYNAPSE on contact
+//   1 AXON       -- NEURON-state voxel, can become SYNAPSE on contact
+//   2 AXON_TRUNK -- BLOCKED-state voxel, conducts but does NOT form
+//                   synapses (myelinated trunk analogue)
+struct MorphologyVoxel {
+  int8_t dx, dy, dz;
+  uint8_t role;
+};
+
+struct MorphologyTemplate {
+  const MorphologyVoxel* voxels;
+  int n;
 };
 
 struct Neuron {

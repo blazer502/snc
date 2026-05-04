@@ -79,32 +79,87 @@ void log_input(const std::string& line) {
   std::fflush(g_log);
 }
 
-// 12-word vocabulary drawn from early-childhood acquisition corpora
-// (CHILDES, MacArthur-Bates CDI top words). Three from each of four
-// semantic groups: people (mom/dad/baby), objects (ball/dog/cat),
-// social/greetings (hi/bye), response (yes/no), action/request
-// (more/stop).
-constexpr int kClasses = 12;
+// 20-word vocabulary drawn from early-childhood acquisition corpora
+// (CHILDES, MacArthur-Bates CDI top words). The original 12 toddler
+// words + 4 number basics + 4 colour basics. Semantic groups:
+//   people     : mom / dad / baby
+//   objects    : ball / dog / cat
+//   greetings  : hi / bye
+//   response   : yes / no
+//   action     : more / stop
+//   numbers    : one / two / three / four
+//   colours    : red / green / blue / yellow
+constexpr int kClasses = 20;
 constexpr int kFeatPerClass = 4;
-constexpr int kLabelFeatures = kClasses * kFeatPerClass;     // 48
-constexpr int kSelfFeatures = kClasses;                      // 12
+constexpr int kLabelFeatures = kClasses * kFeatPerClass;     // 80
+constexpr int kSelfFeatures = kClasses;                      // 20
 constexpr int kImgRows = 4;
 constexpr int kImgCols = 4;
 constexpr int kImageFeatures = kImgRows * kImgCols;          // 16
 
 // Channel layout (input neurons):
-//   [0 .. 47]  label sensory features        (kLabelFeatures = 48)
-//   [48 .. 59] efference / self-perception   (kSelfFeatures  = 12)
-//   [60 .. 75] retinotopic image pixels      (kImageFeatures = 16)
-constexpr int kImgChannelStart = kLabelFeatures + kSelfFeatures;  // 60
-constexpr int kExtFeatures = kLabelFeatures;                  // 48
-constexpr int kEffFeatures = kSelfFeatures;                   // 12
+//   [0   .. 79 ]  label sensory features      (kLabelFeatures = 80)
+//   [80  .. 99 ]  efference / self-perception (kSelfFeatures  = 20)
+//   [100 .. 115]  retinotopic image pixels    (kImageFeatures = 16)
+//   [116 .. 123]  cochlear bins (Pack 26-A)   (kCochleaBins   = 8)
+constexpr int kImgChannelStart = kLabelFeatures + kSelfFeatures;  // 100
+constexpr int kExtFeatures = kLabelFeatures;                  // 80
+constexpr int kEffFeatures = kSelfFeatures;                   // 20
+
+// Pack 26-A.tune.lite (retry post-Phase-1): minimal cochlear pathway.
+// 8 cochlea bins -> 8 A1 cells, DIRECT (no CN/IC/MGN intermediates),
+// permanent labelled-line weight 0.55 delay 13. A1 -> motor PLASTIC
+// at weight 0.0 (no ghost-weight homeostatic drag). With Phase 1
+// AXON x DENDRITE synaptogenesis, organic A1->motor contacts won't
+// form spuriously; only the install_synapse-created edges are active.
+constexpr int kCochleaBins = 8;
+constexpr int kCochleaChannelStart =
+    kLabelFeatures + kSelfFeatures + kImageFeatures;          // 116
 constexpr int kAllFeatures =
-    kLabelFeatures + kSelfFeatures + kImageFeatures;          // 76
+    kLabelFeatures + kSelfFeatures + kImageFeatures + kCochleaBins;  // 124
+
+constexpr int kA1Neurons     = 8;
+constexpr int kA1ChannelBase = 9400;
+
+constexpr int kAcousticOnsetSteps  = 4;
+constexpr int kAcousticVowelSteps  = 8;
+constexpr int kAcousticOffsetSteps = 4;
+constexpr int kAcousticDuration =
+    kAcousticOnsetSteps + kAcousticVowelSteps + kAcousticOffsetSteps;  // 16
+
+// Peterson-Barney 1952 vowel formant frequencies (Hz). One formant
+// triple per word; values approximate the dominant vowel of the
+// English production. Numbers and colour words use plausible approxes
+// from CMU dict / IPA charts.
+struct WordFormants { float f1, f2, f3; };
+constexpr WordFormants kFormants[kClasses] = {
+    /* mom    /ɑ/   */ {730.f, 1090.f, 2440.f},
+    /* dad    /æ/   */ {660.f, 1720.f, 2410.f},
+    /* baby   /eɪ/  */ {550.f, 1900.f, 2500.f},
+    /* ball   /ɔ/   */ {570.f,  840.f, 2410.f},
+    /* dog    /ɔ/   */ {570.f,  870.f, 2400.f},
+    /* cat    /æ/   */ {660.f, 1720.f, 2410.f},
+    /* hi     /aɪ/  */ {660.f, 1200.f, 2550.f},
+    /* bye    /aɪ/  */ {660.f, 1200.f, 2550.f},
+    /* yes    /ɛ/   */ {530.f, 1840.f, 2480.f},
+    /* no     /oʊ/  */ {570.f,  840.f, 2410.f},
+    /* more   /ɔr/  */ {570.f,  840.f, 1700.f},
+    /* stop   /ɑ/   */ {730.f, 1090.f, 2440.f},
+    /* one    /wʌn/ */ {600.f,  900.f, 2500.f},
+    /* two    /tu/  */ {300.f,  870.f, 2240.f},
+    /* three  /θri/ */ {270.f, 2300.f, 3010.f},
+    /* four   /fɔr/ */ {570.f,  840.f, 1700.f},
+    /* red    /ɛd/  */ {530.f, 1840.f, 2480.f},
+    /* green  /in/  */ {270.f, 2300.f, 3010.f},
+    /* blue   /lu/  */ {300.f,  870.f, 2240.f},
+    /* yellow /ɛlo/ */ {530.f, 1840.f, 2400.f},
+};
 
 const char* kWords[kClasses] = {
     "mom", "dad", "baby", "ball", "dog", "cat",
-    "hi", "bye", "yes", "no", "more", "stop"
+    "hi", "bye", "yes", "no", "more", "stop",
+    "one", "two", "three", "four",
+    "red", "green", "blue", "yellow"
 };
 
 // Hand-designed 4x4 retinal patterns -- one per concept. Each
@@ -118,6 +173,8 @@ const char* kWords[kClasses] = {
 //   hi  : left edge        bye : right edge
 //   yes : top edge         no  : bottom edge
 //   more: 4 corners        stop: main diagonal
+//   one  : T-shape         two  : two horizontal pairs
+//   three: zigzag          four : anti-diagonal-cross
 constexpr int kImageBits[kClasses][4] = {
     /* mom  */ {0,  1,  4,  5},
     /* dad  */ {2,  3,  6,  7},
@@ -131,6 +188,14 @@ constexpr int kImageBits[kClasses][4] = {
     /* no   */ {12, 13, 14, 15},
     /* more */ {0,  3, 12, 15},
     /* stop */ {0,  5, 10, 15},
+    /* one   */ {1,  5,  6, 10},
+    /* two   */ {1,  2, 13, 14},
+    /* three */ {0,  6,  9, 15},
+    /* four  */ {3,  5, 10, 12},
+    /* red    */ {2,  5,  8, 11},
+    /* green  */ {1,  4, 11, 14},
+    /* blue   */ {0,  7,  8, 15},
+    /* yellow */ {3,  6,  9, 12},
 };
 
 int word_index(const std::string& w) {
@@ -223,6 +288,12 @@ snc::SimConfig make_config() {
   cfg.dendritic_passive_gain = 1.0f;
   cfg.dendritic_decay = 0.0f;
   cfg.synaptogenesis_default_branch = 1;
+  // Pack P-lite v2: parallel event dispatch via per-target buckets.
+  // N=4 splits delivery work across 4 OpenMP threads while preserving
+  // determinism (each bucket owns a disjoint set of post-synaptic
+  // neurons). At chat-vocab scale the gain is small but the path is
+  // exercised so larger demos can crank N higher.
+  cfg.event_dispatch_buckets = 4;
   return cfg;
 }
 
@@ -233,6 +304,9 @@ struct Brain {
   std::vector<uint32_t> selfs;
   std::vector<uint32_t> inhibitors;
   std::vector<uint32_t> image_in;  // 16 retinotopic pixel input neurons
+  // Pack 26-A.tune.lite: cochlear pathway.
+  std::vector<uint32_t> cochlea;            // 8 INPUT bins
+  std::vector<uint32_t> a1;                 // 8 INTERNAL primary auditory
   std::vector<bool> skip_noise;
   std::mt19937 rng;
   // Last episode bookkeeping (for `correct` / `wrong`).
@@ -308,6 +382,8 @@ void rebuild_index(Brain& b) {
   b.selfs.assign(kClasses, 0);
   b.ext_in.assign(kLabelFeatures, 0);
   b.image_in.assign(kImageFeatures, 0);
+  b.cochlea.assign(kCochleaBins, 0);
+  b.a1.assign(kA1Neurons, 0);
   b.inhibitors.clear();
   for (const auto& nu : b.sim.neurons()) {
     if (nu.role == snc::NeuronRole::INPUT) {
@@ -320,21 +396,31 @@ void rebuild_index(Brain& b) {
       } else if (ch >= kImgChannelStart &&
                  ch < kImgChannelStart + kImageFeatures) {
         b.image_in[ch - kImgChannelStart] = nu.id;
+      } else if (ch >= kCochleaChannelStart &&
+                 ch < kCochleaChannelStart + kCochleaBins) {
+        b.cochlea[ch - kCochleaChannelStart] = nu.id;
       }
     } else if (nu.role == snc::NeuronRole::OUTPUT) {
       if (nu.channel >= 0 && nu.channel < kClasses) {
         b.motors[nu.channel] = nu.id;
       }
+    } else if (nu.role == snc::NeuronRole::INTERNAL) {
+      const int ch = nu.channel;
+      if (ch >= kA1ChannelBase && ch < kA1ChannelBase + kA1Neurons) {
+        b.a1[ch - kA1ChannelBase] = nu.id;
+      }
     }
   }
   // skip_noise: every labelled-line cell + every inhibitory cell
-  // (the 12 lateral PV inh cells plus the ~20% GABAergic fraction
+  // (the lateral PV inh cells plus the ~20% GABAergic fraction
   // randomize_polarity assigned in the bulk).
   b.skip_noise.assign(b.sim.neuron_count() + 1, false);
   for (uint32_t id : b.ext_in)   if (id < b.skip_noise.size()) b.skip_noise[id] = true;
   for (uint32_t id : b.selfs)    if (id < b.skip_noise.size()) b.skip_noise[id] = true;
   for (uint32_t id : b.motors)   if (id < b.skip_noise.size()) b.skip_noise[id] = true;
   for (uint32_t id : b.image_in) if (id < b.skip_noise.size()) b.skip_noise[id] = true;
+  for (uint32_t id : b.cochlea)  if (id < b.skip_noise.size()) b.skip_noise[id] = true;
+  for (uint32_t id : b.a1)       if (id < b.skip_noise.size()) b.skip_noise[id] = true;
   for (const auto& nu : b.sim.neurons()) {
     const bool inh = nu.polarity != snc::NeuronPolarity::EXCITATORY;
     if (inh && nu.id < b.skip_noise.size())
@@ -365,14 +451,15 @@ void build_anatomy(Brain& b) {
   seed.aversive_nucleus_neurons = 6;
   sim.seed_fetal(seed);
 
-  // External sensory (label) inputs: 48 channels = 12 rows of 4
-  // columns at the cortical floor.
+  // External sensory (label) inputs: kLabelFeatures channels = kClasses
+  // rows of kFeatPerClass columns at the cortical floor (z=2). At 16
+  // classes the row stride is 3 (was 5 at 12 classes) to fit y < Y.
   b.ext_in.reserve(kLabelFeatures);
   for (int c = 0; c < kClasses; ++c) {
     for (int f = 0; f < kFeatPerClass; ++f) {
       const int channel = c * kFeatPerClass + f;
       const int x = 3 + f * 4;
-      const int y = 3 + c * 5;
+      const int y = 3 + c * 3;
       const uint32_t id = sim.add_neuron_at(x, y, 2);
       if (!id) {
         std::fprintf(stderr, "ext input %d failed at (%d,%d,2)\n",
@@ -407,16 +494,16 @@ void build_anatomy(Brain& b) {
     }
   }
 
-  // Motor outputs + self-perception + lateral inhibitors. With 12
-  // clusters, lay them out as a 2-row x 6-col grid in (x, y) so they
-  // fit into a 64-wide volume with breathing room between clusters.
+  // Motor outputs + self-perception + lateral inhibitors. With 20
+  // clusters, lay them out as a 2-row x 10-col grid in (x, y) at
+  // stride 6 to fit X = 64.
   b.motors.reserve(kClasses);
   b.selfs.reserve(kClasses);
   b.inhibitors.reserve(kClasses);
   for (int c = 0; c < kClasses; ++c) {
-    const int col = c % 6;
-    const int row = c / 6;          // 0 or 1
-    const int xm = 6 + col * 9;
+    const int col = c % 10;
+    const int row = c / 10;          // 0 or 1
+    const int xm = 4 + col * 6;
     const int ym = (Y / 2 - 8) + row * 16;
     const uint32_t m = sim.add_neuron_at(xm, ym, Z - 3);
     sim.set_role(m, snc::NeuronRole::OUTPUT, c);
@@ -454,6 +541,66 @@ void build_anatomy(Brain& b) {
     // distinct cortical columns / category-selective patches like
     // FFA, PPA). Reduces cross-word interference at scale.
     sim.set_engram_region(c, xm, ym, Z / 2, /*radius=*/9);
+  }
+
+  // Pack 26-A.tune.lite (post-Phase-1): minimal cochlear pathway.
+  // 8 cochlea bins -> 8 A1 cells, direct cochlea -> A1 (no CN/IC/MGN
+  // intermediates). Tonotopic strip at y=Y-3 keeps the auditory
+  // architecture clear of label / image / motor columns.
+  const int aud_y = Y - 3;
+  const int aud_x0 = 16;
+  auto place_or_nearby = [&](int x, int y, int z) -> uint32_t {
+    if (uint32_t id = sim.add_neuron_at(x, y, z); id) return id;
+    for (int r = 1; r <= 4; ++r) {
+      for (int dy = -r; dy <= r; ++dy) {
+        for (int dx = -r; dx <= r; ++dx) {
+          if (uint32_t id = sim.add_neuron_at(x + dx, y + dy, z); id)
+            return id;
+        }
+      }
+    }
+    return 0;
+  };
+  // 8 cochlea bins, x stride 4, z=0.
+  b.cochlea.reserve(kCochleaBins);
+  for (int i = 0; i < kCochleaBins; ++i) {
+    const int x = aud_x0 + i * 4;
+    const uint32_t id = place_or_nearby(x, aud_y, 0);
+    if (!id) { std::fprintf(stderr, "cochlea %d failed near (%d,%d,0)\n",
+                             i, x, aud_y); std::exit(1); }
+    sim.set_role(id, snc::NeuronRole::INPUT, kCochleaChannelStart + i);
+    sim.set_polarity(id, snc::NeuronPolarity::EXCITATORY);
+    b.cochlea.push_back(id);
+  }
+  // 8 A1 INTERNAL cells, x stride 4, z=8.
+  b.a1.reserve(kA1Neurons);
+  for (int i = 0; i < kA1Neurons; ++i) {
+    const int x = aud_x0 + i * 4;
+    const uint32_t id = place_or_nearby(x, aud_y, 8);
+    if (!id) { std::fprintf(stderr, "a1 %d failed near (%d,%d,8)\n",
+                             i, x, aud_y); std::exit(1); }
+    sim.set_role(id, snc::NeuronRole::INTERNAL, kA1ChannelBase + i);
+    sim.set_polarity(id, snc::NeuronPolarity::EXCITATORY);
+    b.a1.push_back(id);
+  }
+  // Cochlea -> A1: 1:1 tonotopic, weight 0.55, delay 13. Permanent
+  // labelled-line. install_synapse bypasses the morphology grid so
+  // Phase 1's AXON x DENDRITE rule does not apply -- the edge is
+  // installed directly.
+  for (int i = 0; i < kCochleaBins; ++i) {
+    sim.install_synapse(b.cochlea[i], b.a1[i], 0.55f, 13, 0, 1.0f);
+  }
+  // A1 -> motor: PLASTIC at weight 0.0 (no homeostatic drag) on
+  // branch 1. STDP grows the A1 cells' connections to the motors
+  // whose teach episodes their firing pattern correlates with.
+  // Phase 1 prevents spurious organic A1 -> motor synapses, so the
+  // STDP-shaped install_synapse edges are the only auditory readout
+  // path. Pack ZZ's post.role == OUTPUT guard preserves the strong
+  // ones from microglial elimination once they grow.
+  for (int i = 0; i < kA1Neurons; ++i) {
+    for (int c = 0; c < kClasses; ++c) {
+      sim.install_synapse(b.a1[i], b.motors[c], 0.0f, 4, 1, 0.0f);
+    }
   }
 
   // Innate label priors / efference / lateral inhibition (permanent).
@@ -504,6 +651,76 @@ void run_present(Brain& b, const float* pattern, int prime_target,
     if (prime_target >= 0 && prime_target < kClasses && prime_strength > 0) {
       b.sim.inject_input(b.motors[prime_target], prime_strength);
     }
+    inject_internal_noise(b);
+    b.sim.step();
+  }
+}
+
+// Pack 26-A.tune.lite: cochlea + acoustic presentation -----------------
+
+// Greenwood 1990 log-frequency place map. 200-4000 Hz over 8 bins.
+int freq_to_bin(float hz) {
+  constexpr float lo = 200.0f;
+  constexpr float hi = 4000.0f;
+  if (hz <= lo) return 0;
+  if (hz >= hi) return kCochleaBins - 1;
+  const float t = std::log(hz / lo) / std::log(hi / lo);
+  int bin = static_cast<int>(t * kCochleaBins);
+  if (bin < 0) bin = 0;
+  if (bin >= kCochleaBins) bin = kCochleaBins - 1;
+  return bin;
+}
+
+// Synthesize an 8-bin cochlear activation for `word` at acoustic step
+// `t`. Each formant lights a Gaussian-skirted activation (sigma=1)
+// with F1/F2/F3 amplitudes 1.0/0.7/0.4. Onset+vowel+offset envelope.
+void cochlea_pattern_at(int word, int t, float* out_8) {
+  for (int i = 0; i < kCochleaBins; ++i) out_8[i] = 0.0f;
+  if (word < 0 || word >= kClasses) return;
+  if (t < 0 || t >= kAcousticDuration) return;
+  float env;
+  if (t < kAcousticOnsetSteps) {
+    env = static_cast<float>(t + 1) / kAcousticOnsetSteps;
+  } else if (t < kAcousticOnsetSteps + kAcousticVowelSteps) {
+    env = 1.0f;
+  } else {
+    const int into_off = t - kAcousticOnsetSteps - kAcousticVowelSteps;
+    env = static_cast<float>(kAcousticOffsetSteps - into_off) /
+          kAcousticOffsetSteps;
+  }
+  if (env < 0.0f) env = 0.0f;
+  const WordFormants& f = kFormants[word];
+  const int b1 = freq_to_bin(f.f1);
+  const int b2 = freq_to_bin(f.f2);
+  const int b3 = freq_to_bin(f.f3);
+  constexpr float kSigma = 1.0f;
+  constexpr float kInv2Sigma2 = 1.0f / (2.0f * kSigma * kSigma);
+  for (int i = 0; i < kCochleaBins; ++i) {
+    const float d1 = static_cast<float>(i - b1);
+    const float d2 = static_cast<float>(i - b2);
+    const float d3 = static_cast<float>(i - b3);
+    const float a = 1.00f * std::exp(-d1 * d1 * kInv2Sigma2)
+                  + 0.70f * std::exp(-d2 * d2 * kInv2Sigma2)
+                  + 0.40f * std::exp(-d3 * d3 * kInv2Sigma2);
+    out_8[i] = env * a;
+  }
+}
+
+// Drive the cochlea over kAcousticDuration steps for `word`, then a
+// short tail so the volley can reach A1 (cochlea -> A1 conduction
+// = 13 steps).
+void run_acoustic_present(Brain& b, int word, int tail = 14) {
+  float pat[kAllFeatures] = {0};
+  for (int t = 0; t < kAcousticDuration; ++t) {
+    for (int i = 0; i < kAllFeatures; ++i) pat[i] = 0.0f;
+    cochlea_pattern_at(word, t, &pat[kCochleaChannelStart]);
+    b.sim.apply_input_pattern(pat, kAllFeatures);
+    inject_internal_noise(b);
+    b.sim.step();
+  }
+  float zero[kAllFeatures] = {0};
+  for (int t = 0; t < tail; ++t) {
+    b.sim.apply_input_pattern(zero, kAllFeatures);
     inject_internal_noise(b);
     b.sim.step();
   }
@@ -623,7 +840,7 @@ void cmd_teach(Brain& b, const std::string& concept) {
   // otherwise win on raw fire_rate_ema. Reset to 1.0 in cmd_correct /
   // cmd_wrong so the bias doesn't bleed into the next teach episode.
   std::vector<uint32_t> biased;
-  biased.reserve(kFeatPerClass + 2);
+  biased.reserve(kFeatPerClass + 2 + kA1Neurons);
   for (int f = 0; f < kFeatPerClass; ++f) {
     const uint32_t id = b.ext_in[c * kFeatPerClass + f];
     if (id) { b.sim.set_excitability_bias(id, 3.0f); biased.push_back(id); }
@@ -636,7 +853,32 @@ void cmd_teach(Brain& b, const std::string& concept) {
     b.sim.set_excitability_bias(b.selfs[c], 3.0f);
     biased.push_back(b.selfs[c]);
   }
+  // Pack 26-A.tune.lite: A1 tonotopic bias on cells whose preferred
+  // bin matches the word's formants. Pack 25.1's bias-floor keeps
+  // these cells admissible to engrams even though A1 lives outside
+  // the motor niches.
+  {
+    const WordFormants& f = kFormants[c];
+    const int fbins[3] = {freq_to_bin(f.f1), freq_to_bin(f.f2),
+                          freq_to_bin(f.f3)};
+    for (int i = 0; i < kA1Neurons; ++i) {
+      bool match = false;
+      for (int fb : fbins) {
+        if (std::abs(i - fb) <= 1) { match = true; break; }
+      }
+      if (match && b.a1[i]) {
+        b.sim.set_excitability_bias(b.a1[i], 3.0f);
+        biased.push_back(b.a1[i]);
+      }
+    }
+  }
   b.last_biased = std::move(biased);
+  // Pack 26-A.tune.lite: acoustic presentation precedes the symbolic
+  // drive. Cochlea fires over kAcousticDuration steps shaped by the
+  // word's formant envelope; spikes cross the 13-step delay to fire
+  // A1 partners. STDP-LTP grows A1 -> motor weights for the cells
+  // whose firing aligns with the symbolic teach drive that follows.
+  run_acoustic_present(b, c);
   // Multi-modal teaching: present the concept through the label
   // channel (verbal sensory features) AND the self-perception
   // channel ("hearing yourself say it"). The image modality is
