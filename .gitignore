@@ -3,6 +3,7 @@ build/
 *.snc.meta
 dev_curve.csv
 *.png
+!docs/figures/*.png
 vocab_voxels.csv
 vocab_neurons.csv
 vocab_synapses.csv
