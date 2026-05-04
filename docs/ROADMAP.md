@@ -13,17 +13,14 @@ the per-pack failure record lives in
 
 ## Live baseline
 
-**Pack 26-A.tune.lite — cochlear pathway** (commit `8dfd007`) —
-**100% accuracy across 25 sessions, 20/20 perfect recall in pure-review.**
-After 5 prior reverts pre-Phase-1, the cochlear pathway finally lands.
-Architecture: 8 cochlea bins → 8 A1 cells (direct, weight 0.55 delay 13);
-A1 → motor plastic at weight 0.0 (no homeostatic drag) grown organically
-by STDP. Phase 1's AXON × DENDRITE rule prevents spurious organic
-A1↔motor contacts -- the missing prerequisite that broke every prior
-attempt. The brain now hears the word spoken (Peterson-Barney 1952
-formants over Greenwood 1990 log-frequency cochlear bins) in parallel
-with the symbolic label drive. 20 words, 8 semantic groups (people,
-objects, greetings, response, action, numbers, colours).
+**Pack 26-C.tune.lite — motor speech** (commit `d4b2c36`) —
+**100% accuracy across 25 sessions, 20/20 perfect recall in pure-review**,
+with auditory (Pack 26-A) + visual (Pack 26-B) + motor speech (Pack 26-C)
+all active. The brain hears words spoken (Peterson-Barney 1952 formants
+over Greenwood 1990 cochlea), sees them (Hubel & Wiesel 1962 V1
+orientation-tuned receptive fields), and produces distinct articulator
+trajectories per word (DIVA-template; 5 articulators × 1-2 firings per
+word's dominant phonemes). 20 words, 8 semantic groups.
 
 ## Dependency graph
 
@@ -799,6 +796,63 @@ combinatorial space → simple syntax emerges from sequential STDP on premotor.
 
 ---
 
+## Phase Φ — Consciousness deliberation loop (USER-TRIGGERED)
+
+### Pack Φ — continuous deliberation loop
+
+**Status**: planned, USER-TRIGGERED. The user has indicated this should
+sit in the remaining plan and be ordered when they ask. Discussion
+document at `docs/DISCUSSION_CONSCIOUSNESS.md`.
+
+**Why**: the simulator is currently mostly reactive (input → cascade →
+output). Real cortex has continuous internal dynamics — a deliberation
+loop that runs even without external input, sustained by a designated
+workspace population, attention selection, and predict-then-compare
+cycles. Pack Φ implements that loop using the simulator's existing
+biological constraints (energy, engram protection, AXON × DENDRITE
+chemistry, microglia, spatial niches).
+
+**Mechanism** (sketch — full design in
+`docs/DISCUSSION_CONSCIOUSNESS.md`):
+
+1. **Workspace population (GNW)**: ~12–20 high-degree connector hub
+   neurons identified via Pack 27 diagnostics. Tagged
+   `is_workspace = true`, given a small intrinsic-bias drive each step,
+   exempt from microglial pruning.
+2. **Continuous deliberation phase**: a new `deliberation_phase()`
+   runs every step regardless of external input. Picks the dominant
+   engram (highest mean `fire_rate_ema`), amplifies it, predicts its
+   sensory consequences (Pack 28 hook), compares to actual input,
+   updates.
+3. **Φ-proxy gate**: only allow workspace cells to broadcast when
+   local Φ exceeds threshold (Pack 27 measures it). Sub-threshold
+   deliberation is "subliminal" — no behavioural effect.
+
+**Prerequisites**: Pack 27 (network diagnostics), Pack 28 (hierarchical
+predictive coding). MVP is achievable without Pack 27/28 but with
+reduced fidelity.
+
+**What you'd observe**: the brain shows non-zero workspace activity
+even with no external input; `imagine` becomes self-sustaining;
+`status` between probes reveals the dominant engram the brain is
+currently "thinking about". Sleep replay automatically includes
+deliberation trajectories from the day.
+
+**Caveats**: this is a functional / mechanistic model, not a
+metaphysical one. We do not claim hard-problem consciousness; we
+claim functional signatures (workspace ignition, integrated
+information, predictive coding loops) that the literature treats as
+correlates of consciousness in real brains.
+
+**Estimated effort**: 2 days for MVP (workspace + bias + deliberation
+period, no Φ-gate, no prediction). 3–5 days with full Pack 27 + 28
+integration.
+
+**Slot**: after Pack 26-C-full closes the I/O loop, after Pack 27 +
+28 land, before or alongside Pack 29. Triggered by user request.
+
+---
+
 ## Phase D — Beyond pre-adolescent
 
 ### Pack 30+ (sketch)
@@ -867,11 +921,13 @@ warrant a focused investigation pack rather than feature work.
 | 2' | Phase 1' (multi-voxel arborisations)   | LANDED | —       |
 | 2'' | Vocab expansion 12 -> 16 (numbers)    | LANDED | —       |
 | A | Pack 26-A.tune.lite (cochlear)          | LANDED | —       |
-| A | Pack 26-B (visual)                      | 1.5    | 5.5     |
-| A | Pack 26-C (motor speech)                | 2–3    | 7.5–8.5 |
-| B | Pack 27 (diagnostics)                   | 1      | 8.5–9.5 |
-| B | Pack 28 (predictive coding)             | 1–2    | 9.5–11.5|
-| C | Pack 29 (counting + 2-word)             | 3–5    | 12.5–16.5 |
+| A | Pack 26-B.tune.lite (visual V1)         | LANDED | —       |
+| A | Pack 26-C.tune.lite (motor speech)      | LANDED | —       |
+| A' | Pack 26-C-full (closed-loop articulator → cochlea)| 1.5 | 1.5 |
+| B | Pack 27 (network diagnostics)           | 1      | 2.5     |
+| B | Pack 28 (predictive coding for INTERNAL)| 1–2    | 3.5–4.5 |
+| C | Pack 29 (counting + 2-word)             | 3–5    | 6.5–9.5 |
+| Φ | Pack Φ — consciousness deliberation loop (user-triggered) | 2–5 | — |
 
 **Total to user-directive-4 goal**: ~2.5–3.5 weeks of focused work,
 assuming no compounding regressions. Pack ZZ comes first because the
