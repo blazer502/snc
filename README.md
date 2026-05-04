@@ -468,22 +468,169 @@ across 8 semantic groups.
 
 ## Primary-source grounding
 
-PDFs in `resource/` (the ones currently load-bearing for the architecture):
+Every architectural choice in the simulator traces to a specific paper or
+textbook. The full reference list, organised by topic. Items in
+`resource/` are PDFs the project owns; the rest are accessible via PubMed
+/ DOI.
 
-| topic | citation | file |
-| ----- | -------- | ---- |
-| Engram cells, allocation, linking | Josselyn & Tonegawa 2020 *Science* 367:eaaw4325 | `Submitted Version_aaw4325_*.pdf` |
-| GNW theory of consciousness | Mashour, Roelfsema, Changeux & Dehaene 2020 *Neuron* 105 | `Conscious-Processing-and-the-Global-Neuronal-Works.pdf` |
-| Integrated Information Theory 4.0 | Albantakis, Barbosa, Findlay, Grasso, Haun, Marshall, Mayner, Zaeemzadeh, Boly, Juel, Sasai, Tsuchiya, Tononi 2023 *PLoS Comp. Bio.* | `journal.pcbi.1011465.pdf` |
-| Cogitate / GNWT vs IIT empirical test | Cogitate Consortium / Melloni 2025 *Nature* 642 | `s41586-025-08888-1.pdf` |
-| Networks of the Brain | Sporns *Networks of the Brain* (MIT Press, 2010) | `Sporns_Book.pdf` |
-| Synaptic pruning by microglia | Xing, Wang, Yang, Tang 2026 *NRR* 21:1698 | `NRR-21-1698.pdf` |
-| BMI / motor decoding (Kandel) | Kandel et al. *Principles of Neural Science* 6e Ch. 39 | `PNS-6thEdition-SectionV-Motor-Chapter39-BMIs.pdf` |
+### Engram cells, memory, allocation
 
-Bonus papers (not yet load-bearing but in scope for upcoming packs):
-microglial cholesterol metabolism / TREM2, AMPAR trafficking, dopamine
-projection populations, GABA/glutamate balance in motor cortex,
-human-cortex evolution.
+- **Josselyn & Tonegawa 2020** *Science* 367:eaaw4325 — *Memory engrams:
+  recalling the past and imagining the future*. Distributed cell
+  assemblies, CREB-mediated allocation, silent engrams, memory linking.
+  → Pack 19A (engram protection), Pack 20 (persistent membership),
+  Pack 25 (CREB allocation, memory linking, silent engrams).
+  `resource/Submitted Version_aaw4325_*.pdf`.
+- **Han et al. 2007** *Science* 316:457 — *Neuronal competition and
+  selection during memory formation*. CREB-induced cells out-compete
+  CREB-low cells for engram membership. → Pack 25 excitability_bias.
+- **Tonegawa, Ramirez et al. 2015** *Nature* 484:381 — silent engrams.
+  → Pack 25 silent-engram parameter on `promote_engram`.
+
+### Synaptic plasticity
+
+- **Bi & Poo 1998** *J. Neurosci.* 18:10464 — STDP exponential temporal
+  kernels. → `stdp_phase`.
+- **Frey & Morris 1997** *Nature* 385:533 — synaptic tagging-and-capture.
+  → `consolidation_tag`, `tag_protection`.
+- **Bienenstock, Cooper & Munro 1982** *J. Neurosci.* 2:32 — BCM sliding
+  threshold for LTP. → `activity_baseline`, `bcm_baseline_alpha`.
+- **Royer & Paré 2003** *Nature* 422:518 — heterosynaptic damping
+  via post-synaptic-density resource competition. → `heterosynaptic_phase`.
+- **Turrigiano 2008** *Cell* 135:422 — homeostatic synaptic scaling
+  via TNF-α / BDNF retrograde signalling. → `homeostatic_phase`.
+- **Markram & Tsodyks 1996** *Nature* 382:807 — short-term plasticity,
+  vesicle pool dynamics. → `vesicle_state`, `release_depression`,
+  `release_recovery`.
+- **Halassa & Haydon 2010** *Annu. Rev. Physiol.* 72:335 —
+  tripartite-synapse / astrocyte calcium modulation of LTP. →
+  `astrocyte_release_increment`, `astrocyte_decay`,
+  `astrocyte_modulation`.
+- **Hensch 2005** *Nat. Rev. Neurosci.* 6:877 — critical-period
+  plasticity in primary cortex. → `sensitive_period_tau`,
+  `sensitive_period_boost`.
+- **Frémaux & Gerstner 2016** *Front. Neural Circuits* 9:85 —
+  three-factor reward-modulated learning rules. → eligibility trace +
+  `apply_reward` + `apply_aversive`.
+
+### Neuron morphology
+
+- **Markram et al. 2015** *Cell* 163:456 — *Reconstruction and
+  simulation of neocortical microcircuitry* (Blue Brain). The canonical
+  morphology library. → Pack M v2 design rationale.
+- **Ascoli et al. 2007** *J. Neurosci.* 27:9247 — NeuroMorpho.org. →
+  cell-type morphology references.
+- **DeFelipe et al. 2013** *Nat. Rev. Neurosci.* 14:202 — pyramidal-cell
+  diversity across cortical layers. → Pack M Phase 1' pyramidal arbor
+  (apical + 4 basal + descending axon).
+- **Tremblay, Lee & Rudy 2016** *Neuron* 91:260 — *GABAergic
+  interneurons in the neocortex: from cellular properties to
+  circuits*. PV / SST / VIP wiring rules. → Pack M Phase 1' interneuron
+  templates.
+- **Stiles & Jernigan 2010** *Neuropsychol. Rev.* 20:327 — adolescent
+  brain pruning produces transient performance regressions. → Pack ZZ
+  v3 dip-recover signature.
+
+### Microglial / structural pruning
+
+- **Schafer & Stevens 2013** *Curr. Opin. Neurobiol.* 23:1034 —
+  microglia engulf synapses tagged by complement. → Pack ZZ v3
+  eat-me / don't-eat-me design.
+- **Stevens et al. 2007** *Cell* 131:1164 — C1q-tagged synapse
+  pruning. → eat_me_tag growth on useless delivery.
+- **Xing, Wang, Yang & Tang 2026** *Neural Regen. Res.* 21:1698 —
+  microglial pruning mechanism review. → Pack ZZ v3 implementation.
+  `resource/NRR-21-1698.pdf`.
+
+### Cortex networks, hubs, scaling
+
+- **Sporns 2010** *Networks of the Brain* (MIT Press) — small-world,
+  lognormal degree, provincial vs connector hubs. → Pack 27 diagnostics
+  scope. `resource/Sporns_Book.pdf`.
+- **Bullmore & Sporns 2012** *Nat. Rev. Neurosci.* 13:336 — complex
+  brain networks review. → Pack 27 metrics list.
+- **Buzsáki & Mizuseki 2014** *Nat. Rev. Neurosci.* 15:264 —
+  lognormal distribution of neural dynamics. → Pack 27 expected
+  degree distribution.
+- **Giedd 1999** *J. Adolesc. Health* 25:14 — human cortex volume
+  trajectory through adolescence. → Pack 14 developmental scaling
+  table.
+
+### Auditory pathway
+
+- **Schreiner & Winer 2007** *Annu. Rev. Neurosci.* 30:151 — auditory
+  cortex tonotopy, CN→IC→MGN→A1 conduction. → Pack 26-A.tune.lite
+  delay 13 (collapsed cascade).
+- **Bruno & Sakmann 2006** *Science* 312:1622 — strong thalamocortical
+  synapses, single-spike threshold crossing. → MGN→A1 weight 0.55
+  above fire_threshold.
+- **Peterson & Barney 1952** *J. Acoust. Soc. Am.* 24:175 — vowel
+  formants. → `kFormants[]` per word.
+- **Greenwood 1990** *J. Acoust. Soc. Am.* 87:2592 — cochlear
+  log-frequency place map. → `freq_to_bin()`.
+
+### Visual pathway
+
+- **Hubel & Wiesel 1962** *J. Physiol.* 160:106 — V1 simple cells with
+  orientation-tuned receptive fields. → Pack 26-B.tune.lite V1
+  receptive fields.
+- **Kuffler 1953** *J. Neurophysiol.* 16:37 — center-surround retinal
+  receptive fields. → planned for Pack 26-B full version.
+- **DiCarlo, Zoccolan & Rust 2012** *Neuron* 73:415 — ventral visual
+  stream. → planned hierarchy for Pack 26-B extensions.
+
+### Motor speech
+
+- **Levelt 1989** *Speaking: From Intention to Articulation* (MIT) —
+  articulatory loop. → planned for Pack 26-C.
+- **Klatt 1980** *J. Acoust. Soc. Am.* 67:971 — formant synthesis. →
+  planned for Pack 26-C vocal-tract decoder.
+- **Tourville & Guenther 2011** *Lang. Cogn. Neurosci.* 26:952 — DIVA
+  model. → Pack 26-C architectural template.
+- **Kandel et al. (PNS, 6e) Ch. 39** — BMIs / motor decoding. →
+  `resource/PNS-6thEdition-SectionV-Motor-Chapter39-BMIs.pdf`.
+
+### Consciousness, predictive coding, attention
+
+- **Mashour, Roelfsema, Changeux & Dehaene 2020** *Neuron* 105:776 —
+  Global Neuronal Workspace theory. Two-stage ignition. → planned
+  Pack Φ workspace population.
+  `resource/Conscious-Processing-and-the-Global-Neuronal-Works.pdf`.
+- **Albantakis et al. 2023** *PLoS Comp. Biol.* 19:e1011465 —
+  Integrated Information Theory 4.0. Five postulates, Φ measurement.
+  → planned Pack 27 Φ-proxy.
+  `resource/journal.pcbi.1011465.pdf`.
+- **Cogitate Consortium 2025** *Nature* 642 — adversarial GNW vs IIT
+  empirical test. → calibration target for the consciousness pack.
+  `resource/s41586-025-08888-1.pdf`.
+- **Friston 2010** *Nat. Rev. Neurosci.* 11:127 — free-energy
+  principle. → continuous prediction-error loop, planned Pack 28
+  + Pack Φ deliberation phase.
+- **Rao & Ballard 1999** *Nat. Neurosci.* 2:79 — predictive coding in
+  V1. → planned Pack 28.
+- **Bastos et al. 2012** *Neuron* 76:695 — canonical microcircuits for
+  predictive coding. → planned Pack 28 layer-specific wiring.
+- **Wang 2001** *Nat. Rev. Neurosci.* 2:485 — persistent activity in
+  prefrontal cortex / working memory. → planned Pack 32.
+
+### Behavioural / cognitive
+
+- **Baumeister 2001** *Rev. Gen. Psychol.* 5:323 — negativity bias. →
+  `aversive_amplification = 2.5`.
+- **Kahneman & Tversky 1979** *Econometrica* 47:263 — loss aversion. →
+  same.
+- **Carey 2009** *The Origin of Concepts* — number-word acquisition,
+  successor function in toddlers. → planned Pack 29 counting.
+- **Tomasello 2003** *Constructing a Language* — usage-based syntax
+  acquisition. → planned Pack 29 two-word combinations and beyond.
+- **MacArthur-Bates CDI** — early-acquisition word lists. → 20-word
+  vocabulary selection.
+
+Bonus papers in `resource/` (not yet load-bearing but in scope for
+upcoming packs): TREM2 / microglial cholesterol metabolism (Pack ZZ
+v4 future), AMPAR trafficking during motor learning, dopamine
+projection populations, GABA / glutamate balance in motor cortex,
+human-specific ARHGAP11B and cortex evolution.
 
 ---
 
