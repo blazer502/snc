@@ -409,6 +409,44 @@ This is what took five Pack 26-A reverts to figure out. Once
 `synaptogenesis_phase` enforced the chemistry asymmetry directly, the
 cochlear pathway integrated cleanly with the labelled-line recall path.
 
+#### Extended shapes — actual sprouted neurons
+
+The figure above shows the *templates*. After a few teach episodes,
+each neuron's `body` extends beyond its template via activity-driven
+sprouting: every body voxel is a candidate site for a new growth
+event, and each new voxel is tagged DENDRITE by default. The figure
+below shows three real cells dumped from a running brain (after
+bootstrap + teach mom / dad / baby):
+
+![Extended neuron shapes](docs/figures/08_extended_neuron_shape.png)
+
+- **Left** — `id=365`, an excitatory pyramidal cell in the cortical
+  bulk. Soma is the red cube; the surrounding light-blue cluster is
+  ~40 dendrite voxels grown by sprouting; one orange voxel is the
+  template axon.
+- **Middle** — `id=332`, a PV basket interneuron. Smaller body
+  (~20 voxels) reflecting the more local PV arbor.
+- **Right** — `id=72`, the largest body in the dump — an excitatory
+  cell that's accumulated dendritic mass over many teach co-firings.
+
+Each neuron is now a multi-voxel 3D shape with explicit
+DENDRITE / AXON / AXON-TRUNK roles per voxel — synapses form only
+at AXON-of-pre × DENDRITE-of-post contacts. Honest observation: the
+shapes are *clusters*, not yet visibly tree-like. Sprouting is
+isotropic-random today, so body voxels accumulate as roughly
+spherical blobs around the soma + template. **Pack TREE** (planned,
+see [docs/ROADMAP.md](docs/ROADMAP.md) Phase T) replaces flat
+`vector<Voxel> body` with `vector<BranchNode> body` (parent-index +
+depth + thickness per voxel) so sprouting becomes leaf-biased and
+the shapes become recognisably dendritic — the user's vision of
+"neurons must extend outward like tree roots."
+
+You can regenerate this figure on your own brain at any time:
+```bash
+python3 scripts/render_neuron.py            # picks 3 example cells
+python3 scripts/render_neuron.py 100        # specific neuron id
+```
+
 ### Excitatory / inhibitory balance
 
 Dale's principle is enforced: each neuron releases only excitatory or
