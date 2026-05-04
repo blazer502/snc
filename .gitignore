@@ -24,3 +24,8 @@ lifetime_summary.png
 lifetime_per_word.png
 lifetime_brain.snc
 lifetime_brain.snc.meta
+# Pack V (MNIST + voice validation): downloaded data + harness output.
+data/
+mnist_brain.snc
+mnist_brain.snc.meta
+neuron_dump_*.csv

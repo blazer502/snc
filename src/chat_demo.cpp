@@ -950,6 +950,9 @@ void cmd_help() {
       "  hear <concept>             external drive on self-channel\n"
       "                             (full activation: 'I heard it')\n"
       "  see <concept>              4x4 retinal image input -> motor\n"
+      "  image_teach <w> p0..p15    multimodal: arbitrary 4x4 image +\n"
+      "                             paired voice/label drive (Pack V)\n"
+      "  image_test p0..p15         visual-only readout (no label/voice)\n"
       "  imagine <concept>          internal recall: self-cue only,\n"
       "                             motor read-out is the engram's\n"
       "                             reactivation. tags as know/guess/\n"
@@ -1468,6 +1471,108 @@ void cmd_imagine(Brain& b, const std::string& concept) {
   say("\n");
 }
 
+// Pack V (multimodal validation): present an arbitrary 4x4 pixel
+// pattern paired with the word's voice/label drive, then run normal
+// reward consolidation. Used by run_mnist.py to teach MNIST digits
+// (downsampled to 4x4) jointly with their spoken digit name.
+void cmd_image_teach(Brain& b, const std::string& concept,
+                     const float* pixels) {
+  const int c = word_index(concept);
+  if (c < 0) { say("unknown concept '%s'\n", concept.c_str()); return; }
+  b.sim.clear_eligibility();
+  b.sim.reset_dynamics();
+  float zero[kAllFeatures] = {0};
+  for (int s = 0; s < 20; ++s) {
+    b.sim.apply_input_pattern(zero, kAllFeatures);
+    b.sim.step();
+  }
+  std::vector<uint32_t> biased;
+  biased.reserve(kFeatPerClass + 2 + kA1Neurons);
+  for (int f = 0; f < kFeatPerClass; ++f) {
+    const uint32_t id = b.ext_in[c * kFeatPerClass + f];
+    if (id) { b.sim.set_excitability_bias(id, 3.0f); biased.push_back(id); }
+  }
+  if (b.motors[c]) {
+    b.sim.set_excitability_bias(b.motors[c], 3.0f);
+    biased.push_back(b.motors[c]);
+  }
+  if (b.selfs[c]) {
+    b.sim.set_excitability_bias(b.selfs[c], 3.0f);
+    biased.push_back(b.selfs[c]);
+  }
+  {
+    const WordFormants& f = kFormants[c];
+    const int fbins[3] = {freq_to_bin(f.f1), freq_to_bin(f.f2),
+                          freq_to_bin(f.f3)};
+    for (int i = 0; i < kA1Neurons; ++i) {
+      bool match = false;
+      for (int fb : fbins) {
+        if (std::abs(i - fb) <= 1) { match = true; break; }
+      }
+      if (match && b.a1[i]) {
+        b.sim.set_excitability_bias(b.a1[i], 3.0f);
+        biased.push_back(b.a1[i]);
+      }
+    }
+  }
+  b.last_biased = std::move(biased);
+  // Voice modality: cochlea pattern for the spoken word.
+  run_acoustic_present(b, c);
+  // Combined visual + label + self drive. Matches cmd_teach but with
+  // image features set from the supplied 4x4 pattern (rather than the
+  // canonical kImageBits[c]).
+  float pat[kAllFeatures];
+  make_pattern(c, pat);
+  pat[kExtFeatures + c] = 0.3f;
+  for (int p = 0; p < kImageFeatures; ++p) {
+    pat[kImgChannelStart + p] = pixels[p];
+  }
+  run_present(b, pat, /*prime=*/c, 0.3f, 16);
+  float rates[kClasses];
+  b.sim.read_output(rates, kClasses);
+  const char* said = utter(rates);
+  const int said_idx = word_index(said);
+  b.last_target = c;
+  b.last_said = said_idx;
+  b.last_match = (said_idx == c);
+  std::memcpy(b.last_rates, rates, sizeof(rates));
+  ++b.total_teaches;
+  if (b.last_match) ++b.correct_teaches;
+  say("[image_teach] target=%s  said=%s%s  teach-acc=%d/%d\n",
+              concept.c_str(), said, b.last_match ? "  (match)" : "",
+              b.correct_teaches, b.total_teaches);
+}
+
+// Visual-only test: present the 4x4 pattern with no label, no voice,
+// no priming. The motor read-out is the brain's classification.
+void cmd_image_test(Brain& b, const float* pixels) {
+  b.sim.clear_eligibility();
+  b.sim.reset_dynamics();
+  float zero[kAllFeatures] = {0};
+  for (int s = 0; s < 20; ++s) {
+    b.sim.apply_input_pattern(zero, kAllFeatures);
+    b.sim.step();
+  }
+  float pat[kAllFeatures] = {0};
+  for (int p = 0; p < kImageFeatures; ++p) {
+    pat[kImgChannelStart + p] = pixels[p];
+  }
+  for (int s = 0; s < 30; ++s) {
+    b.sim.apply_input_pattern(pat, kAllFeatures);
+    inject_internal_noise(b);
+    b.sim.step();
+  }
+  float rates[kClasses];
+  b.sim.read_output(rates, kClasses);
+  const int top = argmax_of(rates, kClasses);
+  const char* said = utter(rates);
+  b.last_target = -1;  // image_test does not record a teach episode
+  std::memcpy(b.last_rates, rates, sizeof(rates));
+  say("[image_test] top=%s  utter=%s  rates=", kWords[top], said);
+  for (int i = 0; i < kClasses; ++i) say(" %s:%.2f", kWords[i], rates[i]);
+  say("\n");
+}
+
 void cmd_grow(Brain& b, int dx, int dy, int dz) {
   // Grow the simulated volume by `dx`, `dy`, `dz` voxels per side.
   // Each must be a multiple of region_size (8). Neuron coordinates
@@ -1640,6 +1745,33 @@ bool process_line(Brain& b, const std::string& raw) {
   }
   else if (cmd == "imagine") {
     std::string c; is >> c; cmd_imagine(b, c);
+  }
+  else if (cmd == "image_teach") {
+    std::string c; is >> c;
+    float pixels[kImageFeatures] = {0};
+    int got = 0;
+    for (int i = 0; i < kImageFeatures; ++i) {
+      if (!(is >> pixels[i])) break;
+      ++got;
+    }
+    if (c.empty() || got != kImageFeatures) {
+      say("usage: image_teach <word> p0 p1 .. p15  (got %d)\n", got);
+    } else {
+      cmd_image_teach(b, c, pixels);
+    }
+  }
+  else if (cmd == "image_test") {
+    float pixels[kImageFeatures] = {0};
+    int got = 0;
+    for (int i = 0; i < kImageFeatures; ++i) {
+      if (!(is >> pixels[i])) break;
+      ++got;
+    }
+    if (got != kImageFeatures) {
+      say("usage: image_test p0 p1 .. p15  (got %d)\n", got);
+    } else {
+      cmd_image_test(b, pixels);
+    }
   }
   else if (cmd == "correct") cmd_correct(b);
   else if (cmd == "wrong")   cmd_wrong(b);

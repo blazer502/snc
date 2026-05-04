@@ -106,6 +106,11 @@ cmake --build build -j
 
 # 15-session lifetime sweep with the current curriculum
 python3 scripts/run_lifetime.py
+
+# External multi-modal validation: MNIST images paired with voice
+python3 scripts/prep_mnist.py     # one-time: downloads MNIST and
+                                  # mean-pools 28x28 -> 4x4 binary
+python3 scripts/run_mnist.py --load lifetime_brain.snc
 ```
 
 OpenMP is detected automatically. Without it the code still builds and runs
@@ -542,6 +547,35 @@ correctly without label cues throughout pure-review). The 20-word
 vocabulary is from CHILDES and the MacArthur-Bates CDI early-acquisition
 lists, organised as 12 toddler concepts + 4 number basics + 4 colour basics
 across 8 semantic groups.
+
+### External multi-modal validation (Pack V)
+
+Beyond the canonical 4-pixel patterns the brain trains on, `scripts/run_mnist.py`
+benchmarks the system against handwritten MNIST digits paired with the spoken
+digit name (cochlea voice + label). The pipeline:
+
+1. `prep_mnist.py` mean-pools 28×28 → 4×4 and binarises at intensity 64/255.
+2. `image_teach <word> p0..p15` binds an arbitrary 4×4 image jointly with the
+   voice/label drive for `<word>` (multi-modal training).
+3. `image_test p0..p15` runs visual-only readout. The motor argmax is the
+   predicted class.
+
+First run (4-class subset {1,2,3,4}, warm-started from `lifetime_brain.snc`,
+30 train + 20 test per digit):
+
+| mode   | overall | one  | two  | three | four |
+| :----- | :-----: | :--: | :--: | :---: | :--: |
+| open   |   2.5%  |  5%  |  5%  |  0%   |  0%  |
+| forced |  21.2%  | 55%  | 15%  |  5%   | 10%  |
+
+`open` argmax is over the full 20-word vocabulary; `forced` restricts argmax
+to the 4 digit words. The result is honest empirical evidence that the
+current 4×4 retina is too coarse for stroke recognition (most digits collapse
+to 1–4 lit pixels) and that pre-consolidated phonemic engrams dominate visual
+binding when only 30 training samples are available. Pack V's value is the
+reproducible external benchmark; a higher-resolution retina is on the roadmap
+as **Pack VR**, after which CIFAR-10 with similar voice pairing becomes
+addressable.
 
 ---
 
