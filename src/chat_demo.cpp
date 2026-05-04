@@ -121,6 +121,31 @@ constexpr int kAllFeatures =
 constexpr int kA1Neurons     = 8;
 constexpr int kA1ChannelBase = 9400;
 
+// Pack 26-B.tune.lite: minimal visual pathway (Hubel & Wiesel 1962).
+// 8 V1 simple cells with 4-pixel orientation-tuned receptive fields:
+// 4 horizontal-row detectors + 4 vertical-column detectors. The
+// 16-pixel retina (existing image_in) projects 4 cells onto each V1
+// cell at weight 0.15 -- 3 of 4 receptive-field pixels co-firing
+// crosses fire_threshold=0.45 (orientation selectivity). V1 -> motor
+// is plastic at weight 0.0 (no homeostatic drag); STDP grows the
+// connections that fire coincident with motor activity during shows.
+constexpr int kV1Neurons     = 8;
+constexpr int kV1ChannelBase = 9500;
+// Per-V1-cell receptive field over the 16-pixel retina:
+//   v1[0..3] = horizontal row detectors (rows 0..3)
+//   v1[4..7] = vertical column detectors (cols 0..3)
+constexpr int kV1RFSize = 4;
+constexpr int kV1RF[kV1Neurons][kV1RFSize] = {
+    /* v1[0]  row 0 */ { 0,  1,  2,  3},
+    /* v1[1]  row 1 */ { 4,  5,  6,  7},
+    /* v1[2]  row 2 */ { 8,  9, 10, 11},
+    /* v1[3]  row 3 */ {12, 13, 14, 15},
+    /* v1[4]  col 0 */ { 0,  4,  8, 12},
+    /* v1[5]  col 1 */ { 1,  5,  9, 13},
+    /* v1[6]  col 2 */ { 2,  6, 10, 14},
+    /* v1[7]  col 3 */ { 3,  7, 11, 15},
+};
+
 constexpr int kAcousticOnsetSteps  = 4;
 constexpr int kAcousticVowelSteps  = 8;
 constexpr int kAcousticOffsetSteps = 4;
@@ -307,6 +332,8 @@ struct Brain {
   // Pack 26-A.tune.lite: cochlear pathway.
   std::vector<uint32_t> cochlea;            // 8 INPUT bins
   std::vector<uint32_t> a1;                 // 8 INTERNAL primary auditory
+  // Pack 26-B.tune.lite: visual pathway.
+  std::vector<uint32_t> v1;                 // 8 INTERNAL V1 simple cells
   std::vector<bool> skip_noise;
   std::mt19937 rng;
   // Last episode bookkeeping (for `correct` / `wrong`).
@@ -384,6 +411,7 @@ void rebuild_index(Brain& b) {
   b.image_in.assign(kImageFeatures, 0);
   b.cochlea.assign(kCochleaBins, 0);
   b.a1.assign(kA1Neurons, 0);
+  b.v1.assign(kV1Neurons, 0);
   b.inhibitors.clear();
   for (const auto& nu : b.sim.neurons()) {
     if (nu.role == snc::NeuronRole::INPUT) {
@@ -408,6 +436,9 @@ void rebuild_index(Brain& b) {
       const int ch = nu.channel;
       if (ch >= kA1ChannelBase && ch < kA1ChannelBase + kA1Neurons) {
         b.a1[ch - kA1ChannelBase] = nu.id;
+      } else if (ch >= kV1ChannelBase &&
+                 ch < kV1ChannelBase + kV1Neurons) {
+        b.v1[ch - kV1ChannelBase] = nu.id;
       }
     }
   }
@@ -421,6 +452,7 @@ void rebuild_index(Brain& b) {
   for (uint32_t id : b.image_in) if (id < b.skip_noise.size()) b.skip_noise[id] = true;
   for (uint32_t id : b.cochlea)  if (id < b.skip_noise.size()) b.skip_noise[id] = true;
   for (uint32_t id : b.a1)       if (id < b.skip_noise.size()) b.skip_noise[id] = true;
+  for (uint32_t id : b.v1)       if (id < b.skip_noise.size()) b.skip_noise[id] = true;
   for (const auto& nu : b.sim.neurons()) {
     const bool inh = nu.polarity != snc::NeuronPolarity::EXCITATORY;
     if (inh && nu.id < b.skip_noise.size())
@@ -600,6 +632,43 @@ void build_anatomy(Brain& b) {
   for (int i = 0; i < kA1Neurons; ++i) {
     for (int c = 0; c < kClasses; ++c) {
       sim.install_synapse(b.a1[i], b.motors[c], 0.0f, 4, 1, 0.0f);
+    }
+  }
+
+  // Pack 26-B.tune.lite (post-Phase-1): minimal visual pathway.
+  // 8 V1 simple cells with 4-pixel orientation-tuned receptive
+  // fields (Hubel & Wiesel 1962). Placed in their own y strip
+  // separate from cochlear cells: y = Y - 7, z = 8 (same depth as
+  // A1 but different y).
+  const int v1_y = Y - 7;
+  const int v1_x0 = 16;
+  b.v1.reserve(kV1Neurons);
+  for (int i = 0; i < kV1Neurons; ++i) {
+    const int x = v1_x0 + i * 4;
+    const uint32_t id = place_or_nearby(x, v1_y, 8);
+    if (!id) { std::fprintf(stderr, "v1 %d failed near (%d,%d,8)\n",
+                             i, x, v1_y); std::exit(1); }
+    sim.set_role(id, snc::NeuronRole::INTERNAL, kV1ChannelBase + i);
+    sim.set_polarity(id, snc::NeuronPolarity::EXCITATORY);
+    b.v1.push_back(id);
+  }
+  // retina[p] -> v1[i]: 4 retinal pixels per V1 cell (its receptive
+  // field, see kV1RF). Weight 0.15 -- 3 of 4 pixels co-firing
+  // crosses fire_threshold=0.45 (orientation selectivity).
+  // Permanent labelled-line: the receptive field is
+  // anatomically defined and shouldn't be plastic.
+  for (int i = 0; i < kV1Neurons; ++i) {
+    for (int k = 0; k < kV1RFSize; ++k) {
+      const int pixel = kV1RF[i][k];
+      sim.install_synapse(b.image_in[pixel], b.v1[i], 0.15f, 4, 0, 1.0f);
+    }
+  }
+  // V1 -> motor: PLASTIC at weight 0.0 on branch 1, like A1->motor.
+  // STDP-LTP grows the V1 cells whose receptive fields align with
+  // each word's image pattern, learned from co-firing during shows.
+  for (int i = 0; i < kV1Neurons; ++i) {
+    for (int c = 0; c < kClasses; ++c) {
+      sim.install_synapse(b.v1[i], b.motors[c], 0.0f, 4, 1, 0.0f);
     }
   }
 

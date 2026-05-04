@@ -357,6 +357,120 @@ def fig_engram():
     plt.close(fig)
 
 
+# --------------------------------------------------------------------------
+# Figure 7 — Neuron morphology stamps (Pack M v2 + Phase 1 + Phase 1')
+# --------------------------------------------------------------------------
+def fig_neuron_morphology():
+    fig, axes = plt.subplots(2, 2, figsize=(10, 9.5))
+    cell_types = [
+        ("Pyramidal (excitatory)",
+         # (dx, dy, dz, role)  role 0 = DENDRITE, 1 = AXON
+         [(0, 0,  0, "soma"),
+          (0, 0,  1, "DENDRITE"),   # apical
+          (1, 0,  0, "DENDRITE"),   # basal +x
+          (-1, 0, 0, "DENDRITE"),   # basal -x
+          (0, 1,  0, "DENDRITE"),   # basal +y
+          (0,-1,  0, "DENDRITE"),   # basal -y
+          (0, 0, -1, "AXON")],      # descending
+         "DeFelipe et al. 2013 — apical + 4 basal dendrites + descending axon"),
+        ("PV basket (inhibitory, perisomatic)",
+         [(0, 0, 0, "soma"),
+          ( 1, 0, 0, "AXON"),
+          (-1, 0, 0, "AXON"),
+          ( 0, 1, 0, "AXON"),
+          ( 0,-1, 0, "AXON"),
+          ( 0, 0, 1, "DENDRITE"),
+          ( 0, 0,-1, "DENDRITE")],
+         "Tremblay 2016 — dense local axonal arbor (perisomatic)"),
+        ("SST Martinotti (inhibitory, dendritic)",
+         [(0, 0, 0, "soma"),
+          ( 0, 0, 1, "AXON"),
+          ( 0, 0, 2, "AXON"),
+          ( 1, 0, 0, "DENDRITE"),
+          (-1, 0, 0, "DENDRITE")],
+         "Tremblay 2016 — ascending axon to layer 1"),
+        ("VIP (inhibitory, disinhibitory)",
+         [(0, 0, 0, "soma"),
+          ( 0,  1, 0, "AXON"),
+          ( 0, -1, 0, "AXON"),
+          ( 1, 0, 0, "DENDRITE"),
+          (-1, 0, 0, "DENDRITE")],
+         "Tremblay 2016 — local axon to other inhibitories"),
+    ]
+    role_colours = {
+        "soma":     ("#444444", "S"),
+        "DENDRITE": ("#9ecae1", "D"),
+        "AXON":     ("#fdae6b", "A"),
+    }
+
+    def render_cell(ax, voxels, title, sub):
+        # Use an x-z slice to show the morphology: most templates lie
+        # in this plane (apical / axon along z; lateral processes
+        # along x). y-only voxels are rendered as a small ring atop
+        # the soma.
+        ax.set_title(title, fontsize=10, fontweight="bold")
+        ax.text(0.5, -0.18, sub, transform=ax.transAxes, ha="center",
+                fontsize=8.5, color="#555", fontstyle="italic")
+        # Plot in (dx, dz) plane.
+        for (dx, dy, dz, role) in voxels:
+            color, label = role_colours[role]
+            if dy != 0 and dx == 0 and dz == 0:
+                # y-only voxel: draw an outlined ring at soma position
+                ax.add_patch(plt.Rectangle((dx - 0.4, dz - 0.4),
+                                            0.8, 0.8,
+                                            facecolor="none",
+                                            edgecolor=color, lw=2,
+                                            linestyle=":"))
+                ax.text(dx, dz, label, ha="center", va="center",
+                        fontsize=8, color=color)
+            else:
+                ax.add_patch(plt.Rectangle((dx - 0.45, dz - 0.45),
+                                            0.9, 0.9,
+                                            facecolor=color,
+                                            edgecolor="#333", lw=0.7))
+                ax.text(dx, dz, label, ha="center", va="center",
+                        fontsize=10, color="white" if role != "DENDRITE"
+                                                  else "#222",
+                        fontweight="bold")
+        ax.set_xlim(-3, 3); ax.set_ylim(-3, 3)
+        ax.set_aspect("equal")
+        ax.set_xlabel("dx (lateral)")
+        ax.set_ylabel("dz (cortical depth)")
+        ax.grid(alpha=0.2)
+        ax.axhline(0, color="#aaa", lw=0.5)
+        ax.axvline(0, color="#aaa", lw=0.5)
+
+    render_cell(axes[0][0], cell_types[0][1], cell_types[0][0],
+                cell_types[0][2])
+    render_cell(axes[0][1], cell_types[1][1], cell_types[1][0],
+                cell_types[1][2])
+    render_cell(axes[1][0], cell_types[2][1], cell_types[2][0],
+                cell_types[2][2])
+    render_cell(axes[1][1], cell_types[3][1], cell_types[3][0],
+                cell_types[3][2])
+
+    legend_handles = [
+        mpatches.Patch(facecolor="#444444", edgecolor="#333",
+                       label="S — soma (DENDRITE-default)"),
+        mpatches.Patch(facecolor="#9ecae1", edgecolor="#333",
+                       label="D — dendrite voxel (receives synapses)"),
+        mpatches.Patch(facecolor="#fdae6b", edgecolor="#333",
+                       label="A — axon voxel (initiates synapses)"),
+        mpatches.Patch(facecolor="none", edgecolor="#666",
+                       linestyle=":",
+                       label="dotted = y-axis voxel (out of x-z slice)"),
+    ]
+    fig.suptitle("Brain model — neuron morphology stamps "
+                 "(Pack M v2 + Phase 1 + Phase 1')",
+                 fontsize=12, fontweight="bold", y=0.995)
+    fig.legend(handles=legend_handles, loc="lower center",
+               bbox_to_anchor=(0.5, -0.01), ncol=2, fontsize=9,
+               frameon=False)
+    fig.tight_layout(rect=[0, 0.07, 1, 0.96])
+    fig.savefig(OUT / "07_neuron_morphology.png", dpi=140)
+    plt.close(fig)
+
+
 def main():
     fig_structural_grid()
     fig_pipeline()
@@ -364,7 +478,8 @@ def main():
     fig_anatomy()
     fig_developmental()
     fig_engram()
-    print(f"wrote 6 figures into {OUT}")
+    fig_neuron_morphology()
+    print(f"wrote 7 figures into {OUT}")
 
 
 if __name__ == "__main__":
