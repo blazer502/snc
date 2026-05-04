@@ -432,14 +432,15 @@ bootstrap + teach mom / dad / baby):
 Each neuron is now a multi-voxel 3D shape with explicit
 DENDRITE / AXON / AXON-TRUNK roles per voxel — synapses form only
 at AXON-of-pre × DENDRITE-of-post contacts. Honest observation: the
-shapes are *clusters*, not yet visibly tree-like. Sprouting is
-isotropic-random today, so body voxels accumulate as roughly
-spherical blobs around the soma + template. **Pack TREE** (planned,
-see [docs/ROADMAP.md](docs/ROADMAP.md) Phase T) replaces flat
-`vector<Voxel> body` with `vector<BranchNode> body` (parent-index +
-depth + thickness per voxel) so sprouting becomes leaf-biased and
-the shapes become recognisably dendritic — the user's vision of
-"neurons must extend outward like tree roots."
+shapes are *clusters*, not yet recognisably **neuron-shaped**.
+Sprouting is isotropic-random today, so body voxels accumulate as
+roughly spherical blobs around the soma + template. **Pack TREE**
+(planned behavioural follow-up; the parent / depth / thickness data
+structure is already in place — see [docs/ROADMAP.md](docs/ROADMAP.md)
+Phase T) flips on leaf-biased sprouting + distal-preferring
+pruning so each cell ends up with a real neuron-like dendritic
+arbour — the user's directive: the brain should be a forest of
+actual neuron shapes, not voxel blobs.
 
 You can regenerate this figure on your own brain at any time:
 ```bash

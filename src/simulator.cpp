@@ -1898,18 +1898,95 @@ void Simulator::sprouting_phase() {
   std::uniform_real_distribution<float> uni(0.0f, 1.0f);
   std::uniform_int_distribution<int> nbr(0, 5);
 
+  // Pack TREE behavioural: per-polarity preferred sprouting axis.
+  // Pyramidals grow their apical dendrite + basal arbour;
+  // inhibitories spread laterally; SST ascends to layer 1. Match
+  // the morphology stamps in `morphology_for()` so the sprouted
+  // arbour extends the cell's intrinsic shape (DeFelipe 2013;
+  // Tremblay 2016). Index into kNeighbours: 0 +x, 1 -x, 2 +y, 3 -y,
+  // 4 +z, 5 -z.
+  auto preferred_dir_weights =
+      [](const Neuron& nu, double w[6]) {
+    // Default weights = 1 each direction.
+    for (int i = 0; i < 6; ++i) w[i] = 1.0;
+    if (nu.role == NeuronRole::INPUT || nu.role == NeuronRole::OUTPUT)
+      return;  // labelled-line cells stay isotropic
+    switch (nu.polarity) {
+      case NeuronPolarity::EXCITATORY:
+        // Pyramidal: +z apical (heavy), lateral basal, avoid -z (axon).
+        w[4] = 4.0;                   // +z apical
+        w[0] = w[1] = 1.5;            // basal ±x
+        w[2] = w[3] = 1.5;            // basal ±y
+        w[5] = 0.3;                   // -z reserved for axon
+        break;
+      case NeuronPolarity::INHIBITORY:        // PV
+        w[0] = w[1] = 2.5;
+        w[2] = w[3] = 2.5;
+        w[4] = w[5] = 0.5;
+        break;
+      case NeuronPolarity::INHIBITORY_SST:    // ascending
+        w[4] = 4.0;
+        w[5] = 0.3;
+        break;
+      case NeuronPolarity::INHIBITORY_VIP:    // lateral
+        w[2] = w[3] = 2.5;
+        w[0] = w[1] = 1.5;
+        break;
+    }
+  };
+
   for (Neuron& nu : neurons_) {
     const float gate = nu.fire_rate_ema;
     if (gate <= 0.0f && !nu.fired_this_step) continue;
     if (nu.body.empty()) continue;
+    // Pack TREE behavioural: leaf-biased parent selection. Leaves
+    // (voxels with the highest depth in the cell's tree) are
+    // preferred sprouting parents, so growth extends *outward* from
+    // the soma rather than densifying the existing cluster. We pick
+    // a parent by sampling depth-weighted: probability ∝ (depth+1)^2.
+    const bool tree_aware =
+        nu.body_branch.size() == nu.body.size();
+    double weight_sum = 0.0;
+    if (tree_aware) {
+      for (const BranchData& bd : nu.body_branch) {
+        const double w = static_cast<double>(bd.depth + 1);
+        weight_sum += w * w;
+      }
+    }
+    double dir_weights[6];
+    preferred_dir_weights(nu, dir_weights);
+    double dir_sum = 0.0;
+    for (int i = 0; i < 6; ++i) dir_sum += dir_weights[i];
+    std::uniform_real_distribution<double> u01(0.0, 1.0);
 
     for (int a = 0; a < cfg_.sprout_attempts; ++a) {
-      std::uniform_int_distribution<int> pick(
-          0, static_cast<int>(nu.body.size()) - 1);
-      const int src_idx = pick(rng_);
+      int src_idx = 0;
+      if (tree_aware && weight_sum > 0.0) {
+        double r = u01(rng_) * weight_sum;
+        for (std::size_t i = 0; i < nu.body_branch.size(); ++i) {
+          const double w = static_cast<double>(nu.body_branch[i].depth + 1);
+          r -= w * w;
+          if (r <= 0.0) {
+            src_idx = static_cast<int>(i);
+            break;
+          }
+        }
+      } else {
+        std::uniform_int_distribution<int> pick(
+            0, static_cast<int>(nu.body.size()) - 1);
+        src_idx = pick(rng_);
+      }
       const Voxel& src = nu.body[src_idx];
 
-      const int* d = kNeighbours[nbr(rng_)];
+      // Pack TREE behavioural: weighted neighbour sampling per
+      // polarity preferred axis.
+      int dir_pick = 0;
+      double dr = u01(rng_) * dir_sum;
+      for (int i = 0; i < 6; ++i) {
+        dr -= dir_weights[i];
+        if (dr <= 0.0) { dir_pick = i; break; }
+      }
+      const int* d = kNeighbours[dir_pick];
       const int nx = src.x + d[0];
       const int ny = src.y + d[1];
       const int nz = src.z + d[2];
