@@ -798,7 +798,14 @@ combinatorial space → simple syntax emerges from sequential STDP on premotor.
 
 ## Phase T — Pack TREE: branching dendritic-tree topology
 
-### Pack TREE — neurons as actual tree-like structures
+### Pack TREE — neurons as actual neuron-shaped morphology
+
+(Internal data structure is a tree of `BranchData` per voxel — that's
+where the "TREE" name comes from. The end product is neuron-shaped
+cells, not abstract trees: real dendritic arbours with proximal
+trunks and distal tapering, plus axonal projections, just like
+cortical pyramidal / interneuron cells.)
+
 
 **Status**: planned. The user observed:
 
@@ -925,7 +932,7 @@ coding. Pack TREE deepens the **structural** side of the simulator
 by giving every neuron a real branching shape, complementing Phase 1
 + Phase 1' which gave them axon-vs-dendrite roles. With Pack TREE
 in place, a future visualisation pass can show the brain as a
-forest of tree-like cells rather than the current voxel blobs —
+forest of neuron-shaped cells rather than the current voxel blobs —
 matching the user's vision: "neurons must extend outward like tree
 roots, just like the actual structure."
 
@@ -1063,7 +1070,7 @@ warrant a focused investigation pack rather than feature work.
 | B | Pack 28 (predictive coding for INTERNAL)| LANDED | —       |
 | C | Pack 29 (counting + 2-word)             | 3–5    | 6.5–9.5 |
 | T | Pack TREE MVP — branch data structure       | LANDED | — |
-| T' | Pack TREE behavioural (leaf-biased sprout, distal prune) | 2–3 | — |
+| T' | Pack TREE behavioural (leaf-biased + directional sprout) | LANDED | — |
 | Φ | Pack Φ — consciousness deliberation loop (user-triggered) | 2–5 | — |
 
 **Total to user-directive-4 goal**: ~2.5–3.5 weeks of focused work,
