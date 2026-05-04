@@ -13,13 +13,21 @@ the per-pack failure record lives in
 
 ## Live baseline
 
-**Pack 25.1** (commit `84009ec`) — 75% accuracy at session 15 on the 12-word
-lifetime sweep. CREB-style engram allocation, memory linking, silent-engram
-parameter, bias-overrides-niche.
+**Pack P-lite** (commit `3069085`) — **83.3% accuracy at session 15** (10/12)
+on the 12-word lifetime sweep. Event-driven spike dispatch via a central
+`DeliveryEvent` ring buffer; one event per outgoing synapse pushed at fire
+time, processed when the step matches the conduction delay. Replaces the
+per-synapse `transit` scan with O(spike-traffic) work per step. Pack 25.1
+features (CREB allocation, memory linking, silent-engram parameter,
+bias-overrides-niche) all still active.
 
 ## Dependency graph
 
 ```
+                              Pack P-lite v2             (OPTIMISATION)
+                              (parallel work queue)
+                                │
+                                ▼
                               Pack ZZ                    (HARD prereq)
                               (microglial pruning)
                                 │
@@ -53,7 +61,41 @@ parameter, bias-overrides-niche.
 
 ---
 
-## Phase 0 was Pack M but reordered
+## Phase 0a — Optimisation (already partially landed)
+
+### Pack P-lite v2 — OpenMP parallel workers over the delivery queue
+
+**Status**: v1 LANDED (commit `3069085`). v2 is an OpenMP layer on top.
+
+**Why**: v1 made spike dispatch event-driven and single-threaded (workers
+are sequential). v2 adds the parallel piece — workers pull from per-region
+sub-queues so each post-synaptic neuron has only one writer. The user's
+4-step description (track structure → apply model → activate synapse →
+worker accepts work) is fully realised when v2 ships.
+
+**Mechanism**: partition the ring slot's `vector<DeliveryEvent>` into N
+sub-buckets keyed by `target_neuron % N`. Each thread processes its own
+bucket — no shared writes to `branch_potential` or `incoming_queue` except
+on the same post, which only one thread sees. STDP-LTD writes to `syn`
+state belonging to multiple pres but each `(pre, syn_idx)` is unique
+within the slot, so no contention there either. Determinism preserved
+because partition is by post id, not by thread id.
+
+**Implementation steps**:
+
+1. Group `DeliveryEvent`s by `target_neuron % cfg.event_dispatch_threads`
+   at fire-dispatch time.
+2. `event_dispatch_phase` runs the per-bucket loops under
+   `#pragma omp parallel for schedule(static)`.
+3. Verify lifetime sweep ≥ 83% s15 (Pack P-lite v1 baseline).
+4. Profile: at 12-word scale parallelism may not matter; tested at the
+   pre-adolescent 128×128×96 stage it should.
+
+**Estimated effort**: 0.5 day. Low risk.
+
+---
+
+## Phase 0b was Pack M but reordered
 
 **Pack M v1 attempted 2026-05-04 and reverted.** Even minimal templates
 (1 voxel per INTERNAL cell, INPUT/OUTPUT skipped) regressed the lifetime
@@ -220,7 +262,7 @@ expanding if baseline holds.
 
 ---
 
-## Phase 0 — Hard prerequisite (now first)
+## Phase 1 — Hard prerequisite (after Pack P-lite v2)
 
 ### Pack ZZ — Microglial pruning
 
@@ -751,14 +793,16 @@ warrant a focused investigation pack rather than feature work.
 
 | Phase | Pack | Days | Cumulative |
 | ----- | ---- | :--: | :--------: |
-| 0 | Pack ZZ (microglial pruning)        | 1–2   | 1–2     |
-| 0' | Pack M  (morphology templates)     | 1.5–2 | 2.5–4   |
-| A | Pack 26-A.tune retry                | 1     | 3.5–5   |
-| A | Pack 26-B (visual)                  | 1.5   | 5–6.5   |
-| A | Pack 26-C (motor speech)            | 2–3   | 7–9.5   |
-| B | Pack 27 (diagnostics)               | 1     | 8–10.5  |
-| B | Pack 28 (predictive coding)         | 1–2   | 9–12.5  |
-| C | Pack 29 (counting + 2-word)         | 3–5   | 12–17.5 |
+| 0a | Pack P-lite v1 (event-driven dispatch) | LANDED | — |
+| 0a | Pack P-lite v2 (parallel workers)      | 0.5    | 0.5     |
+| 1  | Pack ZZ (microglial pruning)           | 1–2    | 1.5–2.5 |
+| 1' | Pack M  (morphology templates)         | 1.5–2  | 3–4.5   |
+| A | Pack 26-A.tune retry                    | 1      | 4–5.5   |
+| A | Pack 26-B (visual)                      | 1.5    | 5.5–7   |
+| A | Pack 26-C (motor speech)                | 2–3    | 7.5–10  |
+| B | Pack 27 (diagnostics)                   | 1      | 8.5–11  |
+| B | Pack 28 (predictive coding)             | 1–2    | 9.5–13  |
+| C | Pack 29 (counting + 2-word)             | 3–5    | 12.5–18 |
 
 **Total to user-directive-4 goal**: ~2.5–3.5 weeks of focused work,
 assuming no compounding regressions. Pack ZZ comes first because the
