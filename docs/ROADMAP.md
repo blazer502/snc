@@ -13,13 +13,15 @@ the per-pack failure record lives in
 
 ## Live baseline
 
-**Pack ZZ v3** (commit `6de27d1`) — **91.7% accuracy at session 15** (11/12)
-on the 12-word lifetime sweep. Microglial pruning (silence-age + weak-weight
-+ tag-protection criteria) on top of Pack P-lite v2's event-driven dispatch.
-Mid-trajectory shows a transient s14 dip (33%) as microglia removes
-load-bearing weak synapses; the network recovers to 92% by s15 via
-compensatory sprouting + STDP retuning — biologically realistic
-pruning-window pattern (Stiles & Jernigan 2010).
+**Pack M v2** (commit `34eb845`) — **91.7% accuracy at session 15** (11/12)
+on the 12-word lifetime sweep, with a 100% peak at session 13 (12/12 perfect
+recall). Real neuron shapes stamped at birth via per-polarity morphology
+templates: each neuron is born with an actual 3D shape rather than a point
+soma. Pack ZZ's microglial pruning provides the substrate headroom that
+makes morphology fit. Synapse count at s15 is 8214 vs 8690 pre-Pack-M (-5%):
+morphology + microglia together yield a tighter, more efficient connectome
+at the same accuracy. The "3 BLOCKED" voxel state now does what it was
+designed to do — encode tissue that exists but isn't synapse-eligible.
 
 ## Dependency graph
 
@@ -95,7 +97,33 @@ because partition is by post id, not by thread id.
 
 ---
 
-## Phase 0b was Pack M but reordered
+## Phase 1' — Pack M (real neuron shapes) [LANDED]
+
+**Status**: v1 reverted at 67% s15 (pre-Pack-ZZ). v2 LANDED at 91.7% s15
+(commit `34eb845`).
+
+**What shipped**: 1-voxel per-polarity templates stamped as BLOCKED
+(role=2 axon-trunk semantics) at neuron birth. `stamp_morphology` is
+idempotent and triggered automatically from `add_neuron_at`,
+`set_role`, `set_polarity`. INPUT / OUTPUT cells skipped (their
+labelled-line synapses are tuned against the single-voxel baseline).
+2-voxel templates regress to 83% so 1-voxel is the current fit.
+
+**The user's original encoding now realises its intent**:
+- "1" NEURON = part of a real neuron's morphology (soma + processes)
+- "2" SYNAPSE = contact between two neurons' "1" voxels
+- "3" BLOCKED = tissue that exists but isn't synapse-eligible
+                (now used for morphology stamps; will be specialised
+                further when Phase 1 refactor lands AXON × DENDRITE
+                synaptogenesis)
+
+**Phase 1 morphology-refactor work** (`docs/MORPHOLOGY_REFACTOR.md`)
+remains pending — when sprouting / synaptogenesis becomes
+morphology-aware, the templates can switch from role=2 BLOCKED back
+to role=0 DENDRITE / role=1 AXON and expand toward multi-voxel
+Markram-Blue-Brain shapes.
+
+## Phase 0b was Pack M but reordered (historical)
 
 **Pack M v1 attempted 2026-05-04 and reverted.** Even minimal templates
 (1 voxel per INTERNAL cell, INPUT/OUTPUT skipped) regressed the lifetime
@@ -814,7 +842,7 @@ warrant a focused investigation pack rather than feature work.
 | 0a | Pack P-lite v1 (event-driven dispatch) | LANDED | — |
 | 0a | Pack P-lite v2 (parallel workers)      | LANDED | — |
 | 1  | Pack ZZ (microglial pruning)           | LANDED | —       |
-| 1' | Pack M  (morphology templates)         | 1.5–2  | 2.5–4   |
+| 1' | Pack M  (morphology templates)         | LANDED | —       |
 | A | Pack 26-A.tune retry                    | 1      | 3.5–5   |
 | A | Pack 26-B (visual)                      | 1.5    | 5–6.5   |
 | A | Pack 26-C (motor speech)                | 2–3    | 7–9.5   |
