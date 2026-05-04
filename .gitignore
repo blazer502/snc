@@ -4,6 +4,8 @@ build/
 dev_curve.csv
 *.png
 !docs/figures/*.png
+# Primary literature PDFs are not open-source; keep them local-only.
+resource/
 vocab_voxels.csv
 vocab_neurons.csv
 vocab_synapses.csv
