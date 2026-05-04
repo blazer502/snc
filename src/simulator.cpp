@@ -30,6 +30,8 @@ Simulator::Simulator(SimConfig cfg)
       grid_(cfg.X, cfg.Y, cfg.Z),
       energy_(cfg.X, cfg.Y, cfg.Z, cfg.region_size, cfg.energy_max),
       owner_(static_cast<std::size_t>(cfg.X) * cfg.Y * cfg.Z, 0u),
+      voxel_role_(static_cast<std::size_t>(cfg.X) * cfg.Y * cfg.Z,
+                  ROLE_DENDRITE),
       astrocyte_ca_(static_cast<std::size_t>(energy_.rX()) *
                         energy_.rY() * energy_.rZ(),
                     0.0f),
@@ -142,6 +144,8 @@ void Simulator::grow_volume(int dx, int dy, int dz) {
 
   std::vector<uint32_t> new_owner(
       static_cast<std::size_t>(newX) * newY * newZ, 0u);
+  std::vector<uint8_t> new_voxel_role(
+      static_cast<std::size_t>(newX) * newY * newZ, ROLE_DENDRITE);
   auto new_lin = [&](int x, int y, int z) {
     return static_cast<std::size_t>(x) +
            static_cast<std::size_t>(y) * newX +
@@ -151,6 +155,8 @@ void Simulator::grow_volume(int dx, int dy, int dz) {
     for (int y = 0; y < cfg_.Y; ++y) {
       for (int x = 0; x < cfg_.X; ++x) {
         new_owner[new_lin(x + dx, y + dy, z + dz)] = owner_[lin(x, y, z)];
+        new_voxel_role[new_lin(x + dx, y + dy, z + dz)] =
+            voxel_role_[lin(x, y, z)];
       }
     }
   }
@@ -188,6 +194,7 @@ void Simulator::grow_volume(int dx, int dy, int dz) {
   grid_ = std::move(new_grid);
   energy_ = std::move(new_energy);
   owner_ = std::move(new_owner);
+  voxel_role_ = std::move(new_voxel_role);
   vz_lo_ += dz;
   vz_hi_ += dz;
 }
@@ -581,27 +588,31 @@ void Simulator::set_branch_passive_gain(uint32_t neuron_id, uint8_t branch,
 // fit. Larger templates can be tried after this lands.
 namespace {
 
-// v2 stamps the morphology voxel as BLOCKED rather than NEURON. Real
-// neurites are dendrite / axon-specific (only axon-dendrite contacts
-// form synapses), but the existing `synaptogenesis_phase` treats all
-// NEURON voxels equivalently. Stamping as BLOCKED makes the tissue
-// exist (the cell occupies the voxel) without adding synaptogenesis-
-// eligible contact points -- closer to the role=2 axon-trunk semantic
-// in the documented Phase 1 morphology-refactor plan. When the
-// AXON x DENDRITE distinction is implemented at synaptogenesis time
-// (a Phase 1 inversion, see docs/MORPHOLOGY_REFACTOR.md), the role=0
-// dendrite stamps can come back.
+// Phase 1 morphology refactor: stamp templates as NEURON-state with
+// role=AXON (1). Soma defaults to DENDRITE (0); sprouted voxels also
+// default to DENDRITE. Synaptogenesis only forms a contact when an
+// AXON voxel of one neuron meets a DENDRITE voxel of another --
+// random NEURON x NEURON contacts no longer become synapses. This
+// is the canonical "axon-of-pre / dendrite-of-post" pairing of real
+// cortical chemistry.
+//
+// Each cell type contributes one AXON voxel along its preferred
+// projection axis:
+//   pyramidal       -- axon descends -z (toward white matter)
+//   PV basket       -- local lateral axon (+x)
+//   SST Martinotti  -- ascending axon (+z, toward layer 1)
+//   VIP             -- local axon to other inhibitories (+y)
 constexpr MorphologyVoxel kMorphPyramidal[] = {
-    { 0, 0,  1, /*AXON_TRUNK / BLOCKED*/ 2},   // apical hint (+z)
+    { 0, 0, -1, /*AXON*/ 1},                   // descending axon
 };
 constexpr MorphologyVoxel kMorphPv[] = {
-    { 1, 0,  0, /*AXON_TRUNK*/ 2},              // perisomatic lateral
+    { 1, 0,  0, /*AXON*/ 1},                   // perisomatic lateral
 };
 constexpr MorphologyVoxel kMorphSst[] = {
-    { 0, 0,  1, /*AXON_TRUNK*/ 2},              // ascending
+    { 0, 0,  1, /*AXON*/ 1},                   // ascending
 };
 constexpr MorphologyVoxel kMorphVip[] = {
-    { 0,  1, 0, /*AXON_TRUNK*/ 2},              // lateral
+    { 0,  1, 0, /*AXON*/ 1},                   // lateral
 };
 
 MorphologyTemplate morphology_for(NeuronPolarity pol, NeuronRole role) {
@@ -645,6 +656,7 @@ int Simulator::stamp_morphology(uint32_t neuron_id) {
     if (grid_.in_bounds(it->x, it->y, it->z)) {
       grid_.set(it->x, it->y, it->z, BrainGrid::EMPTY);
       owner_[lin(it->x, it->y, it->z)] = 0;
+      voxel_role_[lin(it->x, it->y, it->z)] = ROLE_DENDRITE;
     }
     it = nu.body.erase(it);
   }
@@ -663,10 +675,14 @@ int Simulator::stamp_morphology(uint32_t neuron_id) {
       // sprouting iterators skip it.
       grid_.set(x, y, z, BrainGrid::BLOCKED);
       owner_[lin(x, y, z)] = nu.id;
+      voxel_role_[lin(x, y, z)] = ROLE_AXON_TRUNK;
     } else {
-      // Dendrite or axon: NEURON state, eligible for synaptogenesis.
+      // Dendrite or axon: NEURON state, eligible for synaptogenesis
+      // *if its role matches the contact direction* (Phase 1).
       grid_.set(x, y, z, BrainGrid::NEURON);
       owner_[lin(x, y, z)] = nu.id;
+      voxel_role_[lin(x, y, z)] =
+          (v.role == 1) ? ROLE_AXON : ROLE_DENDRITE;
       nu.body.push_back({static_cast<int16_t>(x),
                           static_cast<int16_t>(y),
                           static_cast<int16_t>(z)});
@@ -1747,6 +1763,12 @@ void Simulator::sprouting_phase() {
 
       grid_.set(nx, ny, nz, BrainGrid::NEURON);
       owner_[lin(nx, ny, nz)] = nu.id;
+      // Phase 1 morphology refactor: sprouted voxels default to
+      // DENDRITE (most cortical sprouting at this scale is dendritic
+      // arborisation; axonal trunks are stamped explicitly by
+      // `stamp_morphology`). Dendrites can receive synapses but not
+      // initiate them, matching real chemical-synapse asymmetry.
+      voxel_role_[lin(nx, ny, nz)] = ROLE_DENDRITE;
       nu.body.push_back({static_cast<int16_t>(nx),
                           static_cast<int16_t>(ny),
                           static_cast<int16_t>(nz)});
@@ -1785,6 +1807,14 @@ void Simulator::synaptogenesis_phase() {
     if (!pre.fired_this_step && pre.fire_rate_ema < 0.05f) continue;
 
     for (const Voxel& v : pre.body) {
+      // Phase 1 morphology refactor: only AXON voxels of pre can
+      // initiate a synaptic contact. Dendrite-side voxels of pre
+      // (the default for soma + sprouted body) cannot send signals
+      // outward -- they're receivers. This kills random NEURON x
+      // NEURON contacts that previously formed spurious synapses.
+      const std::size_t v_idx = lin(v.x, v.y, v.z);
+      if (voxel_role_[v_idx] != ROLE_AXON) continue;
+
       for (int k = 0; k < 6; ++k) {
         const int nx = v.x + kNeighbours[k][0];
         const int ny = v.y + kNeighbours[k][1];
@@ -1796,6 +1826,9 @@ void Simulator::synaptogenesis_phase() {
 
         const uint32_t other = owner_[lin(nx, ny, nz)];
         if (other == 0 || other == pre.id) continue;
+        // Post-side voxel must be DENDRITE -- axon-axon contacts
+        // don't form chemical synapses in real cortex.
+        if (voxel_role_[lin(nx, ny, nz)] != ROLE_DENDRITE) continue;
 
         const int ridx = region_idx(nx, ny, nz);
         if (region_count[ridx] >= cfg_.max_synapses_per_region) continue;
@@ -2306,9 +2339,9 @@ void rvec(std::ifstream& f, std::vector<T>& v) {
 bool Simulator::save_state(const char* path) const {
   std::ofstream f(path, std::ios::binary);
   if (!f) return false;
-  const char magic[4] = {'S', 'N', 'C', 'A'};  // SNCA = SNC10
+  const char magic[4] = {'S', 'N', 'C', 'B'};  // SNCB = SNC11
   f.write(magic, 4);
-  uint32_t version = 10;
+  uint32_t version = 11;
   wpod(f, version);
   wpod(f, cfg_);
   wpod(f, step_);
@@ -2318,6 +2351,7 @@ bool Simulator::save_state(const char* path) const {
   wvec(f, grid_.raw_front());
   wvec(f, energy_.raw_data());
   wvec(f, owner_);
+  wvec(f, voxel_role_);            // Phase 1 morphology refactor
 
   uint64_t nn = neurons_.size();
   wpod(f, nn);
@@ -2382,10 +2416,10 @@ bool Simulator::load_state(const char* path) {
   if (!f) return false;
   char magic[4];
   f.read(magic, 4);
-  if (std::memcmp(magic, "SNCA", 4) != 0) return false;
+  if (std::memcmp(magic, "SNCB", 4) != 0) return false;
   uint32_t version;
   rpod(f, version);
-  if (version != 10) return false;
+  if (version != 11) return false;
 
   rpod(f, cfg_);
   rpod(f, step_);
@@ -2404,6 +2438,7 @@ bool Simulator::load_state(const char* path) {
   rvec(f, grid_.raw_front());
   rvec(f, energy_.raw_data());
   rvec(f, owner_);
+  rvec(f, voxel_role_);            // Phase 1 morphology refactor
 
   uint64_t nn;
   rpod(f, nn);

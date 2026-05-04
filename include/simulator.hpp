@@ -804,6 +804,24 @@ class Simulator {
   // tell whether neighbouring NEURON voxels belong to two different cells.
   std::vector<uint32_t> owner_;
 
+  // Phase 1 morphology refactor: per-voxel functional role, parallel
+  // to `owner_`. 0 = DENDRITE (receives synaptic contacts), 1 = AXON
+  // (initiates synaptic contacts), 2 = AXON_TRUNK (BLOCKED-state
+  // tissue that conducts but is not synapse-eligible). Soma voxels
+  // default to DENDRITE; sprouted voxels default to DENDRITE; Pack M
+  // morphology templates stamp explicit AXON / AXON_TRUNK on the
+  // appropriate offsets per cell type. `synaptogenesis_phase`
+  // requires the contact to be AXON × DENDRITE -- random NEURON ×
+  // NEURON contacts no longer form synapses, mirroring real cortex
+  // where only axon-of-pre / dendrite-of-post pairings produce
+  // chemical synapses.
+  std::vector<uint8_t> voxel_role_;
+  enum VoxelRole : uint8_t {
+    ROLE_DENDRITE   = 0,
+    ROLE_AXON       = 1,
+    ROLE_AXON_TRUNK = 2,
+  };
+
   std::vector<Neuron> neurons_;
 
   // Pack P-lite: event-driven spike dispatch. When a neuron fires,
