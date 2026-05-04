@@ -3,6 +3,11 @@
 // ball / dog). Tests whether the architecture generalises beyond
 // binary classification.
 //
+// Scales further by parameter change only: tested up to 8 classes
+// (mom/dad/ball/dog/cat/up/no/yes) with `kClasses = 8`,
+// `kFeatPerClass = 4`, X=Y=64, vz_neurons=360 -- probe accuracy
+// 36/40 = 90% with the same curriculum.
+//
 // Architecture (per-word repeating motif):
 //   - 4 sensory INPUT channels per word (16 total, channels 0..15)
 //   - 1 motor OUTPUT per word (4 total)
@@ -534,11 +539,27 @@ int main(int argc, char** argv) {
   }
   std::printf("[probe] %d / %zu correct\n", probe_correct, scenes.size());
 
-  // Sleep replay + save.
-  std::printf("\n[sleep] consolidating recent patterns\n");
-  sim.sleep_replay_patterns(200, recent_patterns, kAllFeatures, 1.5f);
+  // Sleep cycle: a slow-wave consolidation pass that replays the
+  // experienced sequence in order, followed by a shorter REM-style
+  // fragmentation pass for unusual associations. Mirrors the
+  // empirically-observed SWS-then-REM organisation of mammalian sleep.
+  std::printf("\n[sleep:SWS] sequenced replay of %zu recent patterns\n",
+              recent_patterns.size());
+  sim.sleep_sws_replay(recent_patterns, kAllFeatures,
+                       /*present_per_pattern=*/8,
+                       /*gap_steps=*/3,
+                       /*boost=*/1.6f);
+  std::printf("[sleep:REM] fragmented replay over 120 steps\n");
+  sim.sleep_rem_replay(120, recent_patterns, kAllFeatures, 1.8f);
+
   sim.save_state("vocab_brain.snc");
-  std::printf("[sleep] saved.\n");
+  sim.dump_csv("vocab");
+  // Cortical-map view: positional features per region_size bin.
+  sim.refresh_position_features();
+  sim.dump_position_features_csv("vocab_position_features.csv");
+  std::printf("[sleep] saved (.snc + vocab_voxels/neurons/synapses/"
+              "position_features.csv); %zu populated bins\n",
+              sim.position_bin_count());
 
   return 0;
 }

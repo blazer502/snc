@@ -39,3 +39,6 @@ target_link_libraries(snc_aversive PRIVATE snc_core)
 
 add_executable(snc_vocab src/vocab_demo.cpp)
 target_link_libraries(snc_vocab PRIVATE snc_core)
+
+add_executable(snc_chat src/chat_demo.cpp)
+target_link_libraries(snc_chat PRIVATE snc_core)

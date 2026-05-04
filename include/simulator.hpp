@@ -30,9 +30,11 @@
 #include "energy_field.hpp"
 #include "neuron.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <random>
+#include <unordered_map>
 #include <vector>
 
 namespace snc {
@@ -182,6 +184,28 @@ struct SimConfig {
   // models tend to fall into. 1.0 = legacy deterministic transmission.
   float release_probability = 1.0f;
 
+  // Short-term plasticity (Tsodyks-Markram style). Each successful
+  // release depletes the per-synapse vesicle pool by `release_depression`
+  // (fraction of full pool); per step the pool recovers by
+  // `release_recovery`. The effective release magnitude scales with the
+  // current pool fraction, producing short-term depression on bursts
+  // and recovery during quiescence. Default 0/0 keeps `vesicle_state`
+  // pinned at 1.0 (no STP) for legacy demos.
+  float release_depression = 0.0f;
+  float release_recovery   = 0.0f;
+
+  // Tripartite-synapse / astrocyte calcium modulation. A per-region
+  // calcium accumulator integrates synaptic activity (every release
+  // adds `astrocyte_release_increment` to its region), decays each
+  // step by `astrocyte_decay`, and during STDP multiplies the LTP
+  // amplitude by (1 + astrocyte_modulation * local_calcium). High
+  // local synaptic traffic therefore *gates* plasticity in that
+  // patch of cortex -- the astrocyte is reporting "this region is
+  // working hard, go ahead and consolidate". Default 0 disables.
+  float astrocyte_release_increment = 0.0f;
+  float astrocyte_decay = 0.99f;
+  float astrocyte_modulation = 0.0f;
+
   // Dendritic-compartment integration. A neuron with `n_branches > 1`
   // sums incoming spikes per branch in `branch_potential`. integrate
   // converts each branch's potential into a soma contribution:
@@ -220,6 +244,26 @@ struct StepStats {
   int synapses_formed = 0;
   int synapses_pruned = 0;
   int spikes = 0;
+};
+
+// Position-binned neuron features (cortical-map-style instrumentation).
+// Each populated bin (one `region_size` cube) reports aggregate statistics
+// over the neurons whose soma lives there. Two roles:
+//   - read-only debug / visualisation (cortical map view)
+//   - soft prior for newly-born neurons -- a freshly placed neuron
+//     inherits the local BCM `activity_baseline` so its plasticity is
+//     calibrated to its anatomical neighbourhood, mirroring how cortical
+//     columns in real cortex acquire similar tuning to their neighbours.
+struct PositionFeatures {
+  int n_neurons = 0;
+  float mean_fire_rate_ema = 0.0f;
+  float mean_activity_baseline = 0.0f;
+  float mean_incoming_weight = 0.0f;
+  // Tuning curve: total weight of incoming INPUT->bin synapses
+  // indexed by the source's channel. argmax(tuning_curve) is the
+  // bin's dominant input channel; the magnitude reports how strongly
+  // it is wired to its preferred stimulus. Empty until refreshed.
+  std::vector<float> tuning_curve;
 };
 
 // Initial state inspired by late-fetal cortical development.
@@ -424,6 +468,17 @@ class Simulator {
   // dominate; INTERNAL neurons are untouched.
   void apply_input_pattern(const float* features, int n_features);
 
+  // Predictive-coding companion to `apply_input_pattern`. Sets the
+  // `predicted_input` field of every INPUT neuron whose channel lies
+  // in [0, n_features) to `predictions[channel] * input_drive_strength`.
+  // The chemistry phase will subtract this from `input_acc` before
+  // integration, so a perfectly-predicted stimulus produces zero
+  // effective drive ("not surprising"). Useful for self-voice
+  // prediction: when a motor fires, callers set predictions on the
+  // matching efference channel; the actual efference delivery then
+  // arrives at the predicted level and the residual drive is small.
+  void apply_prediction_pattern(const float* predictions, int n_features);
+
   // Read the mean fire_rate_ema across OUTPUT neurons grouped by channel.
   // `out[i]` will hold the mean rate of OUTPUT neurons with channel == i;
   // channels with no neurons get 0.
@@ -489,6 +544,34 @@ class Simulator {
   bool save_state(const char* path) const;
   bool load_state(const char* path);
 
+  // Dump the structural state to CSV files at `prefix_voxels.csv`,
+  // `prefix_neurons.csv` and `prefix_synapses.csv`. Used by the
+  // visualisation scripts under `scripts/` to render the 3D anatomy and
+  // the connectome graph. Only structure is written -- no chemistry.
+  bool dump_csv(const char* prefix) const;
+
+  // -------- Position-binned features (cortical-map instrumentation) -------
+  // Bin index of a neuron's soma in `cfg.region_size`-voxel units.
+  // Returns {0, 0, 0} for an invalid id.
+  std::array<int, 3> position_bin_for(uint32_t neuron_id) const;
+
+  // Recompute the position-feature map from current neuron state. O(n).
+  // Demos call this before reading or dumping features.
+  void refresh_position_features();
+
+  // Look up aggregate features at a bin (after refresh). Returns nullptr
+  // if the bin has no neurons.
+  const PositionFeatures* position_features_at(int bx, int by, int bz) const;
+
+  // Number of populated bins (after refresh).
+  std::size_t position_bin_count() const noexcept {
+    return position_features_.size();
+  }
+
+  // Dump per-bin features to a CSV at `path`. Useful for visualisation
+  // overlays. Caller is responsible for an up-to-date refresh.
+  bool dump_position_features_csv(const char* path) const;
+
   // Sleep replay / consolidation. Drives the network with internal noise
   // only (no external input), with `boost` multiplied STDP amplitude, for
   // `n_steps` steps. Replays the patterns currently encoded in the
@@ -507,6 +590,106 @@ class Simulator {
                               const std::vector<std::vector<float>>& patterns,
                               int n_features,
                               float boost = 1.6f);
+
+  // Slow-wave-sleep style sequenced replay. Each pattern in the supplied
+  // list is presented in order for `present_per_pattern` steps, then a
+  // brief silence (`gap_steps`) lets the connectome consolidate before
+  // the next pattern. Mirrors hippocampal sharp-wave-ripples: the most
+  // recently lived sequences are replayed in their original temporal
+  // order, recruiting STDP windows that depend on causal ordering.
+  // STDP gain is boosted (`boost`); attention modulator is attenuated
+  // (sleep is a low-acetylcholine state).
+  void sleep_sws_replay(const std::vector<std::vector<float>>& sequence,
+                         int n_features,
+                         int present_per_pattern = 12,
+                         int gap_steps = 4,
+                         float boost = 1.8f);
+
+  // REM-style fragmented replay: random patterns from the pool, drawn
+  // independently each step, with high acetylcholine and very strong
+  // STDP boost so unusual co-firings get rapidly consolidated. Models
+  // the dream-like recombination characteristic of REM sleep.
+  void sleep_rem_replay(int n_steps,
+                         const std::vector<std::vector<float>>& patterns,
+                         int n_features,
+                         float boost = 2.0f);
+
+  // Promote a learned word/concept into a permanent engram. Selects the
+  // OUTPUT neurons whose channel == `output_channel` plus the top
+  // `top_k_internal` INTERNAL neurons currently driving the readout
+  // (ranked by `fire_rate_ema * excitability_bias`, with a small raw
+  // fire_rate_ema floor to skip silent cells). Every synapse whose pre
+  // and post are *both* in this set has its `permanent` flag set and
+  // `consolidation_tag` pinned to 1.0, locking the population-coded
+  // recall path against later overwrite by STDP / pruning / homeostatic
+  // scaling. Distributed-engram analogue of long-term consolidation:
+  // the cell-assembly that just succeeded is anatomically preserved
+  // while the weights themselves remain modulable. Returns the number
+  // of synapses newly promoted.
+  //
+  // Memory linking (Josselyn & Tonegawa 2020): the fresh-neuron
+  // preference penalty (~10x for cells already enrolled in some other
+  // class's engram) is softened to ~2x for *same-session* overlaps --
+  // classes taught within the same `set_session_id` window. This
+  // captures the temporal-contiguity rule observed empirically: two
+  // memories acquired close in time share more engram cells than
+  // memories acquired far apart, encoding "these belong together".
+  //
+  // Silent engrams (Tonegawa, Ramirez 2015): when `silent=true`, the
+  // membership table is updated and the synapses are flagged
+  // permanent / tagged (structurally preserved) but the weight floor
+  // is NOT applied -- recall via natural cue stays below threshold.
+  // The engram exists; behavioural readout doesn't. A later
+  // non-silent promote_engram call (or a strong artificial cue via
+  // `imagine`) lifts it back into recallable territory.
+  int promote_engram(int output_channel, int top_k_internal,
+                     bool silent = false);
+
+  // CREB-mediated intrinsic excitability. Multiplicatively biases this
+  // neuron's score during `promote_engram` candidate selection. Real
+  // biology: CREB-induced cells out-compete CREB-low cells for engram
+  // membership at the moment of memory allocation (Han et al. 2007).
+  // Demos call this immediately before an experience to make a
+  // hand-picked subpopulation (e.g. label-feature INPUTs, the target
+  // motor's column, future A1 tonotopic cells) the preferred engram
+  // recruits, instead of letting noise-driven bulk fetal-seed neurons
+  // win on raw fire_rate_ema. Default 1.0 = no bias; reset after the
+  // teach episode so the bias does not contaminate later allocations.
+  void set_excitability_bias(uint32_t neuron_id, float value);
+
+  // Identifies the current "session" for memory linking inside
+  // `promote_engram`. Two classes promoted with the same session id
+  // are considered acquired-together and share engram cells more
+  // freely; classes promoted in different sessions retain the strong
+  // fresh-neuron penalty so they end up on disjoint cell assemblies.
+  // Default session id is 0; demos bump this between training
+  // sessions / days. Sessions are not persisted across save/load --
+  // callers should reset the session id after `load_state`.
+  void set_session_id(int session_id);
+
+  // Declare a preferred cortical niche for class `output_channel`.
+  // Subsequent promote_engram calls boost candidate neurons whose
+  // soma sits inside the sphere of radius `radius` around (x, y, z),
+  // and penalise candidates outside it. Mirrors how real cortex
+  // gives different concept categories distinct cortical columns
+  // (e.g. faces in fusiform face area, places in PPA): different
+  // words end up in different physical regions, so their engrams
+  // overlap less and learning a new word causes less interference
+  // with previously-stored ones. With `radius == 0` the bias is
+  // turned off for this class.
+  void set_engram_region(int output_channel, int x, int y, int z,
+                          int radius);
+
+  // Total number of synapses currently flagged permanent. Diagnostic
+  // for engram growth across a curriculum.
+  std::size_t permanent_synapse_count() const noexcept;
+
+  // Fraction of the structural grid currently occupied by tissue
+  // (NEURON or SYNAPSE cells). Used as a demand-driven growth signal:
+  // when occupancy crosses a threshold the demo can call
+  // `grow_volume` to expand the substrate before sprouting starts to
+  // fail from crowding.
+  float occupancy_fraction() const noexcept;
 
   // Run one full simulation step.
   void step();
@@ -571,6 +754,45 @@ class Simulator {
   std::vector<uint32_t> owner_;
 
   std::vector<Neuron> neurons_;
+
+  // Position-binned aggregate features (refreshed on demand).
+  std::unordered_map<int64_t, PositionFeatures> position_features_;
+
+  // Initialise a freshly-placed neuron's BCM `activity_baseline` from
+  // the running mean of its bin neighbours. Soft cortical-map prior:
+  // newborn neurons join with the local plasticity calibration, no
+  // hard parameter sharing required.
+  void apply_position_prior(Neuron& nu);
+
+  // Per-region astrocyte calcium accumulator. Same coarse spatial
+  // grid as the energy field; integrates synaptic-release events,
+  // decays each step, and scales local STDP amplitude. Empty unless
+  // the demo configures non-zero astrocyte fields.
+  std::vector<float> astrocyte_ca_;
+
+  // Per-class engram membership. `engram_members_[c]` is the sorted
+  // list of neuron ids belonging to class `c`'s engram. Maintained
+  // by promote_engram so repeated rehearsals always reinforce the
+  // same cell assembly rather than spawning a new one each time --
+  // the basis-of-intelligence-by-repetition invariant: same
+  // engram, more weight, not new engrams.
+  std::vector<std::vector<uint32_t>> engram_members_;
+
+  // Per-class preferred cortical region. `class_regions_[c]` is
+  // (cx, cy, cz, radius); radius == 0 means no preference.
+  // Set via set_engram_region; consulted by promote_engram to bias
+  // candidate selection toward the niche.
+  struct ClassRegion {
+    int x = 0, y = 0, z = 0, radius = 0;
+  };
+  std::vector<ClassRegion> class_regions_;
+
+  // Per-class session identifier captured at the most recent
+  // `promote_engram` call. Used by memory linking: classes with the
+  // same session id are temporally co-acquired and the fresh-neuron
+  // penalty between them is relaxed. Sentinel -1 = never promoted.
+  std::vector<int> class_session_;
+  int current_session_id_ = 0;
 
   StepStats last_stats_{};
 

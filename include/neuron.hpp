@@ -58,6 +58,17 @@ struct SynapseEdge {
   // weight; permanence affects only physical removal.
   bool permanent = false;
 
+  // Short-term plasticity: fraction of the vesicle pool currently
+  // available for release. Each successful release depletes the pool
+  // by `cfg.release_depression`; per step, a `cfg.release_recovery`
+  // fraction is restored, capped at 1.0. The effective release
+  // magnitude is multiplied by `vesicle_state`, producing the
+  // characteristic short-term depression observed at most cortical
+  // synapses (Markram & Tsodyks). Defaults (0/0) disable the dynamic
+  // and keep `vesicle_state == 1.0` indefinitely so legacy demos
+  // are unchanged.
+  float vesicle_state = 1.0f;
+
   // Conduction delay in simulation steps -- equal to the Manhattan distance
   // from the pre-synaptic soma to the synaptic voxel at formation time.
   // Captures the fact that an action potential needs time to propagate
@@ -163,6 +174,15 @@ struct Neuron {
   // `branch_potential` so their compartmental integration is preserved.
   std::vector<float> incoming_queue;
 
+  // Predictive-coding "expected input" for this step. The chemistry
+  // phase computes `effective_input = input_acc - predicted_input`
+  // before integrating, so a perfectly-predicted stimulus produces
+  // zero effective drive (no surprise) while an unpredicted one
+  // produces full drive. Cleared each step. The companion API
+  // `Simulator::apply_prediction_pattern` writes it from the
+  // demo / caller side -- mimics top-down corticothalamic feedback.
+  float predicted_input = 0.0f;
+
   // Number of dendritic branches. Default 1 = legacy single-compartment
   // behaviour. Setting >1 turns this neuron into a multi-compartment cell.
   uint8_t n_branches = 1;
@@ -213,6 +233,17 @@ struct Neuron {
   // strengthening one synapse forces a cost on its neighbours
   // (heterosynaptic LTD; Royer & Pare 2003).
   float ltp_received_this_step = 0.0f;
+
+  // CREB-mediated intrinsic-excitability bias used during engram
+  // allocation (Josselyn & Tonegawa 2020). Real neurons that happen to
+  // express elevated CREB at the moment of an experience are
+  // preferentially recruited into the engram even if their raw firing
+  // rate is not the highest; the molecular state biases candidacy.
+  // Multiplies the candidate score in `promote_engram`. Default 1.0
+  // = no bias. Demos/curriculum bump this for stimulus-relevant cells
+  // (e.g. label-feature INPUTs, target motor column, future A1
+  // tonotopic cells) immediately before a teach episode.
+  float excitability_bias = 1.0f;
 };
 
 }  // namespace snc

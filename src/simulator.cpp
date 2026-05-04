@@ -30,6 +30,9 @@ Simulator::Simulator(SimConfig cfg)
       grid_(cfg.X, cfg.Y, cfg.Z),
       energy_(cfg.X, cfg.Y, cfg.Z, cfg.region_size, cfg.energy_max),
       owner_(static_cast<std::size_t>(cfg.X) * cfg.Y * cfg.Z, 0u),
+      astrocyte_ca_(static_cast<std::size_t>(energy_.rX()) *
+                        energy_.rY() * energy_.rZ(),
+                    0.0f),
       rng_(cfg.seed) {}
 
 bool Simulator::try_set_neuron(int x, int y, int z, uint32_t owner_id) {
@@ -58,6 +61,7 @@ void Simulator::seed_neurons(int n) {
                     static_cast<int16_t>(z)};
         neu.body.push_back(neu.soma);
         neurons_.push_back(std::move(neu));
+        apply_position_prior(neurons_.back());
         break;
       }
     }
@@ -89,6 +93,7 @@ int Simulator::birth_neurons(int n, const BoundingBox* area) {
                     static_cast<int16_t>(z)};
         neu.body.push_back(neu.soma);
         neurons_.push_back(std::move(neu));
+        apply_position_prior(neurons_.back());
         ++placed;
         break;
       }
@@ -380,6 +385,7 @@ void Simulator::seed_fetal(const FetalSeed& f) {
                             static_cast<int16_t>(nz)});
       }
       neurons_.push_back(std::move(neu));
+      apply_position_prior(neurons_.back());
       return true;
     }
     return false;
@@ -555,6 +561,8 @@ uint32_t Simulator::add_neuron_at(int x, int y, int z) {
               static_cast<int16_t>(z)};
   neu.body.push_back(neu.soma);
   neurons_.push_back(std::move(neu));
+  // Soft cortical-map prior on the just-pushed neuron.
+  apply_position_prior(neurons_.back());
   return static_cast<uint32_t>(neurons_.size());
 }
 
@@ -578,6 +586,15 @@ void Simulator::apply_input_pattern(const float* features, int n_features) {
     if (nu.role != NeuronRole::INPUT) continue;
     if (nu.channel < 0 || nu.channel >= n_features) continue;
     nu.input_acc = features[nu.channel] * cfg_.input_drive_strength;
+  }
+}
+
+void Simulator::apply_prediction_pattern(const float* predictions,
+                                          int n_features) {
+  for (Neuron& nu : neurons_) {
+    if (nu.role != NeuronRole::INPUT) continue;
+    if (nu.channel < 0 || nu.channel >= n_features) continue;
+    nu.predicted_input = predictions[nu.channel] * cfg_.input_drive_strength;
   }
 }
 
@@ -628,6 +645,11 @@ void Simulator::apply_reward_per_class(const float* rewards, int n_classes,
           r = rewards[post.channel];
         }
       }
+      // Permanent (engram) synapses ignore *negative* reward signals:
+      // a previously-confirmed recall path cannot be unlearned by a
+      // later curriculum item that simply targets a different class.
+      // Positive rewards are still allowed so engrams can strengthen.
+      if (syn.permanent && r < 0.0f) continue;
       float w = syn.weight + lr * r * syn.eligibility;
       if (w > cfg_.weight_max) w = cfg_.weight_max;
       if (w < 0.0f) w = 0.0f;
@@ -666,6 +688,10 @@ void Simulator::apply_aversive(float intensity) {
         continue;
       const Neuron& post = neurons_[syn.target_neuron - 1];
       if (post.role != NeuronRole::OUTPUT) continue;
+      // Permanent (engram) synapses are exempt from aversive weakening
+      // for the same reason they ignore negative reward: a confirmed
+      // recall path is not undone by later wrong-class punishment.
+      if (syn.permanent) continue;
       float dw = sign * lr * intensity * syn.eligibility;
       float w = syn.weight + dw;
       if (w > cfg_.weight_max) w = cfg_.weight_max;
@@ -697,6 +723,208 @@ void Simulator::reset_dynamics() {
       syn.transit.clear();
     }
   }
+}
+
+void Simulator::set_excitability_bias(uint32_t neuron_id, float value) {
+  if (neuron_id == 0 || neuron_id > neurons_.size()) return;
+  neurons_[neuron_id - 1].excitability_bias =
+      value < 0.0f ? 0.0f : value;
+}
+
+void Simulator::set_session_id(int session_id) {
+  current_session_id_ = session_id;
+}
+
+void Simulator::set_engram_region(int output_channel, int x, int y, int z,
+                                    int radius) {
+  if (output_channel < 0) return;
+  if (static_cast<std::size_t>(output_channel) >= class_regions_.size()) {
+    class_regions_.resize(static_cast<std::size_t>(output_channel) + 1);
+  }
+  class_regions_[output_channel] = {x, y, z, std::max(0, radius)};
+}
+
+int Simulator::promote_engram(int output_channel, int top_k_internal,
+                              bool silent) {
+  if (output_channel < 0) return 0;
+  if (static_cast<std::size_t>(output_channel) >= engram_members_.size()) {
+    engram_members_.resize(static_cast<std::size_t>(output_channel) + 1);
+  }
+  if (static_cast<std::size_t>(output_channel) >= class_session_.size()) {
+    class_session_.resize(static_cast<std::size_t>(output_channel) + 1, -1);
+  }
+
+  // 1. Persistent membership: always re-include the existing engram
+  //    set for this class. Repetition reinforces the same cell
+  //    assembly -- new internal neurons are admitted only to top up
+  //    a too-small engram, not to replace existing members. Plus
+  //    every OUTPUT neuron whose channel == output_channel.
+  std::vector<uint32_t> engram_ids = engram_members_[output_channel];
+  for (const Neuron& n : neurons_) {
+    if (n.role == NeuronRole::OUTPUT && n.channel == output_channel) {
+      engram_ids.push_back(n.id);
+    }
+  }
+  std::sort(engram_ids.begin(), engram_ids.end());
+  engram_ids.erase(std::unique(engram_ids.begin(), engram_ids.end()),
+                   engram_ids.end());
+
+  // 2. Top up with currently-firing INTERNAL neurons not yet in the
+  //    engram, until membership reaches the target size. The floor
+  //    (0.02) keeps silent cells out even if the engram is small.
+  //    Score is fire_rate_ema, but neurons already enrolled in
+  //    *other* classes' engrams take a heavy penalty -- we strongly
+  //    prefer fresh hubs so different words get distinct cell
+  //    assemblies. Without this penalty, top-K by raw rate keeps
+  //    picking the same mixed-selectivity hubs for every word and
+  //    every promotion reinforces those shared hubs onto every
+  //    motor, collapsing recall into mush.
+  // Track *which* other class each candidate is enrolled in, so the
+  // memory-linking rule can soften the fresh-neuron penalty between
+  // classes acquired in the same session (Pack 25). 0 = no other
+  // engram; otherwise stores (other_class + 1) for the most recent
+  // owner found.
+  std::vector<int> other_engram_class(neurons_.size() + 1, 0);
+  for (std::size_t cls = 0; cls < engram_members_.size(); ++cls) {
+    if (static_cast<int>(cls) == output_channel) continue;
+    for (uint32_t id : engram_members_[cls]) {
+      if (id <= neurons_.size())
+        other_engram_class[id] = static_cast<int>(cls) + 1;
+    }
+  }
+  // Per-class preferred niche: candidates inside the sphere get a
+  // multiplicative score boost; candidates outside get a penalty.
+  // This drives different words into different cortical regions,
+  // mirroring the column / area specialisation of real cortex.
+  ClassRegion region;
+  if (output_channel >= 0 &&
+      static_cast<std::size_t>(output_channel) < class_regions_.size()) {
+    region = class_regions_[output_channel];
+  }
+  const bool region_active = region.radius > 0;
+  const float r2 = static_cast<float>(region.radius) * region.radius;
+  std::vector<std::pair<float, uint32_t>> ranked;
+  for (const Neuron& n : neurons_) {
+    if (n.role != NeuronRole::INTERNAL) continue;
+    if (n.fire_rate_ema <= 0.02f) continue;
+    if (std::binary_search(engram_ids.begin(), engram_ids.end(), n.id))
+      continue;
+    // CREB-style allocation bias (Pack 25): rank by activity scaled
+    // by intrinsic excitability, not raw fire_rate_ema. The 0.02
+    // floor above still guards against silent cells slipping in via
+    // a high bias alone.
+    float score = n.fire_rate_ema * n.excitability_bias;
+    if (int other = other_engram_class[n.id]; other > 0) {
+      const int other_cls = other - 1;
+      bool linked = false;
+      if (static_cast<std::size_t>(other_cls) < class_session_.size()) {
+        const int other_session = class_session_[other_cls];
+        linked = (other_session >= 0 &&
+                  other_session == current_session_id_);
+      }
+      score *= linked ? 0.5f : 0.1f;  // soft penalty for memory-linked
+    }
+    if (region_active) {
+      const float dx = n.soma.x - region.x;
+      const float dy = n.soma.y - region.y;
+      const float dz = n.soma.z - region.z;
+      const float d2 = dx * dx + dy * dy + dz * dz;
+      float niche;
+      // Inside the sphere -> 2x boost. Outside but within 2*radius
+      // -> linear falloff to 0.5x. Far outside -> 0.25x.
+      if (d2 <= r2) niche = 2.0f;
+      else if (d2 <= 4.0f * r2) {
+        const float t = (d2 - r2) / (3.0f * r2);  // 0..1
+        niche = 2.0f - 1.5f * t;  // 2.0 -> 0.5
+      } else {
+        niche = 0.25f;
+      }
+      // Pack 25.1: a strongly CREB-biased candidate is anatomically
+      // pre-committed elsewhere (e.g. an A1 cell during a teach
+      // episode) -- the niche penalty would otherwise let an
+      // unbiased noise neuron in the motor column displace it.
+      // Clamp the niche floor to 0.75x for cells with bias > 1.5
+      // so molecular pre-encoding can override spatial bias.
+      if (n.excitability_bias > 1.5f && niche < 0.75f) niche = 0.75f;
+      score *= niche;
+    }
+    ranked.emplace_back(score, n.id);
+  }
+  const int existing_internal =
+      static_cast<int>(engram_ids.size()) -
+      // Subtract OUTPUT neurons (channel match) so the budget for
+      // INTERNAL members is independent of motor count.
+      [&]{
+        int n = 0;
+        for (uint32_t id : engram_ids) {
+          if (id == 0 || id > neurons_.size()) continue;
+          const Neuron& nu = neurons_[id - 1];
+          if (nu.role == NeuronRole::OUTPUT &&
+              nu.channel == output_channel) ++n;
+        }
+        return n;
+      }();
+  const int budget = std::max(0, top_k_internal - existing_internal);
+  const int k = std::min<int>(budget, static_cast<int>(ranked.size()));
+  if (k > 0) {
+    std::partial_sort(ranked.begin(), ranked.begin() + k, ranked.end(),
+                      [](const auto& a, const auto& b) {
+                        return a.first > b.first;
+                      });
+    for (int i = 0; i < k; ++i) engram_ids.push_back(ranked[i].second);
+    std::sort(engram_ids.begin(), engram_ids.end());
+  }
+  engram_members_[output_channel] = engram_ids;
+  class_session_[output_channel] = current_session_id_;
+
+  // 2. Mark every synapse whose pre AND post are both in the engram.
+  int n_marked = 0;
+  for (Neuron& n : neurons_) {
+    if (!std::binary_search(engram_ids.begin(), engram_ids.end(), n.id))
+      continue;
+    for (SynapseEdge& s : n.outgoing) {
+      if (!std::binary_search(engram_ids.begin(), engram_ids.end(),
+                              s.target_neuron))
+        continue;
+      if (!s.permanent) ++n_marked;
+      s.permanent = true;
+      s.consolidation_tag = 1.0f;
+      if (silent) continue;  // silent engram: skip weight floor
+      // Floor the engram-edge weight at half of weight_max so the
+      // recall path is electrically functional even if STDP had not
+      // yet driven it high. The synapse is still free to potentiate
+      // further; this only prevents an under-trained path from being
+      // promoted without enough drive to reactivate.
+      const float engram_floor = 0.5f * cfg_.weight_max;
+      if (s.weight < engram_floor) s.weight = engram_floor;
+    }
+  }
+  return n_marked;
+}
+
+std::size_t Simulator::permanent_synapse_count() const noexcept {
+  std::size_t n = 0;
+  for (const Neuron& nu : neurons_) {
+    for (const SynapseEdge& s : nu.outgoing) {
+      if (s.permanent) ++n;
+    }
+  }
+  return n;
+}
+
+float Simulator::occupancy_fraction() const noexcept {
+  const std::size_t vol = grid_.volume();
+  if (vol == 0) return 0.0f;
+  std::size_t occupied = 0;
+  for (int z = 0; z < grid_.Z(); ++z) {
+    for (int y = 0; y < grid_.Y(); ++y) {
+      for (int x = 0; x < grid_.X(); ++x) {
+        const auto c = grid_.get(x, y, z);
+        if (c == BrainGrid::NEURON || c == BrainGrid::SYNAPSE) ++occupied;
+      }
+    }
+  }
+  return static_cast<float>(occupied) / static_cast<float>(vol);
 }
 
 void Simulator::integrate_incoming_phase() {
@@ -764,12 +992,19 @@ void Simulator::chemistry_phase() {
     // For INPUT neurons we let the externally-applied input dominate by not
     // adding any leakage from previous potential -- this gives the data
     // signal a clean foothold each step. Internal neurons integrate.
+    // Predictive-coding subtraction: INPUT neurons' effective drive is
+    // input_acc minus predicted_input (clipped at 0 -- predictions
+    // never invert the sign of an actual stimulus). When prediction
+    // matches actual exactly, no surprise -> no firing. Defaults
+    // leave predicted_input at 0 so non-PC demos behave identically.
     if (nu.role == NeuronRole::INPUT) {
-      nu.potential = nu.input_acc;
+      const float effective = nu.input_acc - nu.predicted_input;
+      nu.potential = effective > 0.0f ? effective : 0.0f;
     } else {
       nu.potential = nu.potential * cfg_.potential_decay + nu.input_acc;
     }
     nu.input_acc = 0.0f;
+    nu.predicted_input = 0.0f;
 
     // Refractory period: after a recent spike the soma cannot fire
     // again for `refractory_steps` steps. The accumulated potential
@@ -865,6 +1100,22 @@ void Simulator::stdp_phase() {
 
       const float kernel = std::exp(-static_cast<float>(dt) / tau);
 
+      // Astrocyte calcium gating: high local Ca2+ in the synapse's
+      // region (recent synaptic activity reported by neighbouring
+      // glia) up-regulates LTP. Default modulation is 0 -> no effect.
+      float astro_gain = 1.0f;
+      if (cfg_.astrocyte_modulation > 0.0f && !astrocyte_ca_.empty()) {
+        const int R = energy_.region_size();
+        const std::size_t idx = std::size_t(syn.pos.x / R) +
+                                 std::size_t(syn.pos.y / R) *
+                                     energy_.rX() +
+                                 std::size_t(syn.pos.z / R) *
+                                     energy_.rX() * energy_.rY();
+        if (idx < astrocyte_ca_.size()) {
+          astro_gain += cfg_.astrocyte_modulation * astrocyte_ca_[idx];
+        }
+      }
+
       // BCM modulation of LTP amplitude: when the post is firing well
       // above its own baseline, LTP shrinks toward zero; below baseline
       // it stays near the unmodulated rate. The modulation is a smooth
@@ -877,7 +1128,7 @@ void Simulator::stdp_phase() {
           std::max(0.05f,
                    std::min(1.5f,
                             1.0f - 0.5f * post.fire_rate_ema / bcm_threshold));
-      const float dw = a_ltp * kernel * bcm_factor;
+      const float dw = a_ltp * kernel * bcm_factor * astro_gain;
 
       syn.weight += dw;
       if (syn.weight > cfg_.weight_max) syn.weight = cfg_.weight_max;
@@ -916,6 +1167,11 @@ void Simulator::heterosynaptic_phase() {
       const Neuron& post = neurons_[syn.target_neuron - 1];
       const float total = post.ltp_received_this_step;
       if (total <= 0.0f) continue;
+      // Permanent (engram) synapses are exempt from heterosynaptic
+      // damping: their tag-and-capture state holds the post-synaptic
+      // density resource against competition from later-arriving
+      // potentiation events.
+      if (syn.permanent) continue;
       // Each synapse pays a fixed share of the total LTP. Strong synapses
       // can absorb the cost; weak synapses get pushed lower and may
       // eventually hit the spine retraction floor.
@@ -953,6 +1209,11 @@ void Simulator::homeostatic_phase() {
       // Multiplicative correction toward the target. When total is low
       // the synapse is scaled up; when total is high it is scaled down.
       const float correction = 1.0f + rate * (target - total) / target;
+      // Permanent (engram) synapses are exempt from down-scaling: real
+      // tagged-and-captured spines maintain their AMPA receptor count
+      // against the cell-wide retrograde scaling signal. They are still
+      // allowed to scale *up* when total drops below target.
+      if (syn.permanent && correction < 1.0f) continue;
       syn.weight *= correction;
       if (syn.weight > cfg_.weight_max) syn.weight = cfg_.weight_max;
       if (syn.weight < 0.0f) syn.weight = 0.0f;
@@ -1000,6 +1261,21 @@ void Simulator::scheduler_dispatch_phase() {
   std::uniform_real_distribution<float> u(0.0f, 1.0f);
   const bool stochastic =
       cfg_.release_probability > 0.0f && cfg_.release_probability < 1.0f;
+  const bool stp_active =
+      cfg_.release_depression > 0.0f || cfg_.release_recovery > 0.0f;
+
+  // Short-term plasticity recovery: every step, every synapse refills
+  // a fraction `release_recovery` of its vesicle pool, capped at 1.0.
+  // Depression is applied per release in the delivery loop below.
+  if (cfg_.release_recovery > 0.0f) {
+    for (Neuron& pre : neurons_) {
+      for (auto& syn : pre.outgoing) {
+        syn.vesicle_state = std::min(
+            1.0f, syn.vesicle_state + cfg_.release_recovery);
+      }
+    }
+  }
+
   for (Neuron& pre : neurons_) {
     for (auto& syn : pre.outgoing) {
       if (syn.transit.empty()) continue;
@@ -1037,7 +1313,33 @@ void Simulator::scheduler_dispatch_phase() {
           }
           uint8_t b = syn.branch;
           if (b >= post.n_branches) b = 0;
-          post.branch_potential[b] += read->magnitude;
+          // Short-term-plasticity: scale magnitude by vesicle pool
+          // fraction, then deplete the pool by `release_depression`.
+          // No-op if STP is disabled (default).
+          const float effective =
+              stp_active ? read->magnitude * syn.vesicle_state
+                         : read->magnitude;
+          post.branch_potential[b] += effective;
+          if (cfg_.release_depression > 0.0f) {
+            syn.vesicle_state -= cfg_.release_depression;
+            if (syn.vesicle_state < 0.0f) syn.vesicle_state = 0.0f;
+          }
+          // Astrocyte calcium: each release adds a tiny contribution to
+          // the local region's Ca2+ accumulator. The astrocyte reports
+          // "this patch is working hard"; stdp_phase reads this as a
+          // local plasticity-gain modulator.
+          if (cfg_.astrocyte_release_increment > 0.0f &&
+              !astrocyte_ca_.empty()) {
+            const int R = energy_.region_size();
+            const std::size_t idx = std::size_t(syn.pos.x / R) +
+                                     std::size_t(syn.pos.y / R) *
+                                         energy_.rX() +
+                                     std::size_t(syn.pos.z / R) *
+                                         energy_.rX() * energy_.rY();
+            if (idx < astrocyte_ca_.size()) {
+              astrocyte_ca_[idx] += cfg_.astrocyte_release_increment;
+            }
+          }
 
           // LTD half of STDP: if the post fired *before* this delivery
           // arrived, the spike is too late to be causal. The same NMDA /
@@ -1045,12 +1347,17 @@ void Simulator::scheduler_dispatch_phase() {
           // removes receptors, weakening the synapse. Strictly local --
           // we look only at the post's last_fire_step, which the synapse
           // already needs to know about its own target.
-          const int dt = step_ - post.last_fire_step;
-          if (dt > 0 && dt <= cfg_.stdp_window) {
-            const float kernel =
-                std::exp(-static_cast<float>(dt) / cfg_.stdp_tau);
-            syn.weight -= cfg_.stdp_a_ltd * kernel;
-            if (syn.weight < 0.0f) syn.weight = 0.0f;
+          // Permanent (engram) synapses are exempt from STDP-LTD on
+          // late delivery: the tagged-and-captured spine maintains its
+          // AMPA receptors against per-event acausal weakening.
+          if (!syn.permanent) {
+            const int dt = step_ - post.last_fire_step;
+            if (dt > 0 && dt <= cfg_.stdp_window) {
+              const float kernel =
+                  std::exp(-static_cast<float>(dt) / cfg_.stdp_tau);
+              syn.weight -= cfg_.stdp_a_ltd * kernel;
+              if (syn.weight < 0.0f) syn.weight = 0.0f;
+            }
           }
         }
         syn.last_delivery_step = step_;
@@ -1120,6 +1427,12 @@ void Simulator::energy_regen_phase() {
     float& e = energy_.energy_at(nu.soma.x, nu.soma.y, nu.soma.z);
     e -= cfg_.fire_cost;
     if (e < 0.0f) e = 0.0f;
+  }
+
+  // Astrocyte calcium decay. Each region's Ca2+ accumulator drifts
+  // toward zero between releases, modelling astrocyte Ca2+ buffering.
+  if (cfg_.astrocyte_decay < 1.0f && !astrocyte_ca_.empty()) {
+    for (auto& v : astrocyte_ca_) v *= cfg_.astrocyte_decay;
   }
 }
 
@@ -1354,6 +1667,82 @@ void Simulator::sleep_consolidate(int n_steps, float boost) {
   cfg_.acetylcholine_level = saved_ach;
 }
 
+void Simulator::sleep_sws_replay(
+    const std::vector<std::vector<float>>& sequence, int n_features,
+    int present_per_pattern, int gap_steps, float boost) {
+  // Slow-wave-sleep replay: each pattern in `sequence` is presented in
+  // order, like the hippocampus replaying a recent trajectory in its
+  // original temporal sequence. STDP windows that depend on causal
+  // ordering get coherent input; the network consolidates the
+  // *order-dependent* aspects of the experience, not just the
+  // co-firing statistics that random replay reinforces. Silence gaps
+  // between patterns let dynamics decay so successive patterns don't
+  // contaminate each other's plasticity.
+  if (sequence.empty() || n_features <= 0) return;
+  const float saved_a_ltp = cfg_.stdp_a_ltp;
+  const float saved_a_ltd = cfg_.stdp_a_ltd;
+  const float saved_ach = cfg_.acetylcholine_level;
+  cfg_.stdp_a_ltp *= boost;
+  cfg_.stdp_a_ltd *= 0.6f;        // SWS suppresses LTD a bit
+  cfg_.acetylcholine_level *= 0.3f;  // low ACh in slow-wave sleep
+
+  std::vector<float> zero(n_features, 0.0f);
+  for (const auto& pat : sequence) {
+    for (int s = 0; s < present_per_pattern; ++s) {
+      apply_input_pattern(
+          pat.data(),
+          std::min<int>(n_features, static_cast<int>(pat.size())));
+      step();
+    }
+    for (int s = 0; s < gap_steps; ++s) {
+      apply_input_pattern(zero.data(), n_features);
+      step();
+    }
+  }
+
+  cfg_.stdp_a_ltp = saved_a_ltp;
+  cfg_.stdp_a_ltd = saved_a_ltd;
+  cfg_.acetylcholine_level = saved_ach;
+}
+
+void Simulator::sleep_rem_replay(
+    int n_steps, const std::vector<std::vector<float>>& patterns,
+    int n_features, float boost) {
+  // REM-style replay: random fragments at each step with very high
+  // STDP gain and elevated attention. Encourages the recombination
+  // and unusual associations characteristic of dreams. Implementation
+  // is the noise-augmented pattern replay from sleep_replay_patterns
+  // but with stronger boost and an acetylcholine *increase* rather
+  // than decrease (REM is a high-ACh state).
+  if (patterns.empty() || n_features <= 0) {
+    sleep_consolidate(n_steps, boost);
+    return;
+  }
+  const float saved_a_ltp = cfg_.stdp_a_ltp;
+  const float saved_a_ltd = cfg_.stdp_a_ltd;
+  const float saved_ach = cfg_.acetylcholine_level;
+  cfg_.stdp_a_ltp *= boost;
+  cfg_.stdp_a_ltd *= 0.5f;
+  cfg_.acetylcholine_level *= 1.4f;
+
+  std::uniform_int_distribution<int> pick(
+      0, static_cast<int>(patterns.size()) - 1);
+  std::uniform_real_distribution<float> bigger_noise(0.0f, 0.08f);
+  for (int s = 0; s < n_steps; ++s) {
+    const auto& pat = patterns[pick(rng_)];
+    apply_input_pattern(pat.data(),
+                        std::min<int>(n_features, static_cast<int>(pat.size())));
+    for (Neuron& nu : neurons_) {
+      nu.input_acc += bigger_noise(rng_);
+    }
+    step();
+  }
+
+  cfg_.stdp_a_ltp = saved_a_ltp;
+  cfg_.stdp_a_ltd = saved_a_ltd;
+  cfg_.acetylcholine_level = saved_ach;
+}
+
 void Simulator::sleep_replay_patterns(
     int n_steps, const std::vector<std::vector<float>>& patterns,
     int n_features, float boost) {
@@ -1391,6 +1780,215 @@ void Simulator::sleep_replay_patterns(
   cfg_.stdp_a_ltp = saved_a_ltp;
   cfg_.stdp_a_ltd = saved_a_ltd;
   cfg_.acetylcholine_level = saved_ach;
+}
+
+namespace {
+
+// Encode a (bx, by, bz) bin triple into a single int64. Each axis takes
+// 24 bits with two's-complement sign-extension on decode, which is
+// plenty for any grid this code base is going to run on.
+constexpr int64_t kBinAxisMask = 0xFFFFFFLL;
+inline int64_t pos_bin_key(int bx, int by, int bz) {
+  return (static_cast<int64_t>(bx) & kBinAxisMask) |
+         ((static_cast<int64_t>(by) & kBinAxisMask) << 24) |
+         ((static_cast<int64_t>(bz) & kBinAxisMask) << 48);
+}
+inline std::array<int, 3> pos_bin_decode(int64_t key) {
+  auto sx = [](int64_t v) {
+    int x = static_cast<int>(v & kBinAxisMask);
+    if (x & 0x800000) x |= ~static_cast<int>(kBinAxisMask);
+    return x;
+  };
+  return {sx(key), sx(key >> 24), sx(key >> 48)};
+}
+
+}  // namespace
+
+std::array<int, 3> Simulator::position_bin_for(uint32_t neuron_id) const {
+  if (neuron_id == 0 || neuron_id > neurons_.size()) return {0, 0, 0};
+  const Neuron& nu = neurons_[neuron_id - 1];
+  const int R = std::max(1, cfg_.region_size);
+  return {nu.soma.x / R, nu.soma.y / R, nu.soma.z / R};
+}
+
+void Simulator::refresh_position_features() {
+  position_features_.clear();
+  const int R = std::max(1, cfg_.region_size);
+
+  // Determine the highest INPUT channel in use so tuning_curve is
+  // sized consistently across bins.
+  int max_input_channel = -1;
+  for (const Neuron& nu : neurons_) {
+    if (nu.role == NeuronRole::INPUT && nu.channel > max_input_channel) {
+      max_input_channel = nu.channel;
+    }
+  }
+  const int n_channels =
+      (max_input_channel >= 0) ? max_input_channel + 1 : 0;
+
+  for (const Neuron& nu : neurons_) {
+    const int64_t key = pos_bin_key(nu.soma.x / R, nu.soma.y / R,
+                                     nu.soma.z / R);
+    auto& pf = position_features_[key];
+    pf.n_neurons += 1;
+    pf.mean_fire_rate_ema += nu.fire_rate_ema;
+    pf.mean_activity_baseline += nu.activity_baseline;
+    pf.mean_incoming_weight += nu.incoming_weight_sum;
+    if (n_channels > 0 &&
+        pf.tuning_curve.size() < static_cast<std::size_t>(n_channels)) {
+      pf.tuning_curve.resize(n_channels, 0.0f);
+    }
+  }
+
+  // Walk every INPUT neuron's outgoing synapses and add the synapse
+  // weight to the target bin's tuning_curve entry for that channel.
+  // This snapshots the connectome's labelled-line mapping per bin --
+  // bins primarily wired from channel C will report C as their
+  // dominant tuning. O(neurons * avg_outgoing).
+  if (n_channels > 0) {
+    for (const Neuron& pre : neurons_) {
+      if (pre.role != NeuronRole::INPUT) continue;
+      if (pre.channel < 0 || pre.channel >= n_channels) continue;
+      for (const SynapseEdge& syn : pre.outgoing) {
+        if (syn.target_neuron == 0 ||
+            syn.target_neuron > neurons_.size()) continue;
+        const Neuron& post = neurons_[syn.target_neuron - 1];
+        const int64_t key = pos_bin_key(
+            post.soma.x / R, post.soma.y / R, post.soma.z / R);
+        auto it = position_features_.find(key);
+        if (it == position_features_.end()) continue;
+        if (it->second.tuning_curve.size() <
+            static_cast<std::size_t>(n_channels)) {
+          it->second.tuning_curve.resize(n_channels, 0.0f);
+        }
+        it->second.tuning_curve[pre.channel] += syn.weight;
+      }
+    }
+  }
+
+  for (auto& kv : position_features_) {
+    PositionFeatures& pf = kv.second;
+    if (pf.n_neurons > 0) {
+      const float n = static_cast<float>(pf.n_neurons);
+      pf.mean_fire_rate_ema /= n;
+      pf.mean_activity_baseline /= n;
+      pf.mean_incoming_weight /= n;
+    }
+  }
+}
+
+const PositionFeatures* Simulator::position_features_at(
+    int bx, int by, int bz) const {
+  auto it = position_features_.find(pos_bin_key(bx, by, bz));
+  if (it == position_features_.end()) return nullptr;
+  return &it->second;
+}
+
+bool Simulator::dump_position_features_csv(const char* path) const {
+  std::ofstream f(path);
+  if (!f) return false;
+
+  // Tuning-curve width: max length across bins so every row has the
+  // same column count.
+  std::size_t n_channels = 0;
+  for (const auto& kv : position_features_) {
+    n_channels = std::max(n_channels, kv.second.tuning_curve.size());
+  }
+
+  f << "bin_x,bin_y,bin_z,n_neurons,mean_fire_rate_ema,"
+       "mean_activity_baseline,mean_incoming_weight";
+  for (std::size_t i = 0; i < n_channels; ++i) f << ",tuning_" << i;
+  f << "\n";
+  for (const auto& kv : position_features_) {
+    const auto bin = pos_bin_decode(kv.first);
+    const PositionFeatures& pf = kv.second;
+    f << bin[0] << ',' << bin[1] << ',' << bin[2] << ','
+      << pf.n_neurons << ',' << pf.mean_fire_rate_ema << ','
+      << pf.mean_activity_baseline << ',' << pf.mean_incoming_weight;
+    for (std::size_t i = 0; i < n_channels; ++i) {
+      const float v = (i < pf.tuning_curve.size())
+                          ? pf.tuning_curve[i]
+                          : 0.0f;
+      f << ',' << v;
+    }
+    f << '\n';
+  }
+  return f.good();
+}
+
+void Simulator::apply_position_prior(Neuron& nu) {
+  // Soft cortical-map prior: a newborn neuron inherits the running
+  // mean BCM activity_baseline of its bin neighbours. Linear scan is
+  // O(n_neurons); fine for the population sizes the demos run with.
+  // No-op when the bin is empty (the neuron keeps its default baseline).
+  const int R = std::max(1, cfg_.region_size);
+  const int bx = nu.soma.x / R;
+  const int by = nu.soma.y / R;
+  const int bz = nu.soma.z / R;
+  int n = 0;
+  float sum_baseline = 0.0f;
+  for (const Neuron& other : neurons_) {
+    if (other.id == nu.id) continue;
+    if (other.soma.x / R != bx) continue;
+    if (other.soma.y / R != by) continue;
+    if (other.soma.z / R != bz) continue;
+    ++n;
+    sum_baseline += other.activity_baseline;
+  }
+  if (n > 0) {
+    nu.activity_baseline = sum_baseline / static_cast<float>(n);
+  }
+}
+
+bool Simulator::dump_csv(const char* prefix) const {
+  // Write structural snapshot to three companion CSV files: voxels (the
+  // 2-bit grid filtered to non-EMPTY cells), neurons (id + role +
+  // polarity + soma + body-voxel count + n_branches) and synapses
+  // (pre, post, position, weight, branch, conduction delay, permanent).
+  // The Python visualisation scripts under `scripts/` read these.
+  const std::string p = prefix;
+  std::ofstream vf(p + "_voxels.csv");
+  std::ofstream nf(p + "_neurons.csv");
+  std::ofstream sf(p + "_synapses.csv");
+  if (!vf || !nf || !sf) return false;
+
+  vf << "x,y,z,state\n";
+  for (int z = 0; z < grid_.Z(); ++z) {
+    for (int y = 0; y < grid_.Y(); ++y) {
+      for (int x = 0; x < grid_.X(); ++x) {
+        const auto c = grid_.get(x, y, z);
+        if (c == BrainGrid::EMPTY) continue;
+        vf << x << ',' << y << ',' << z << ',' << static_cast<int>(c) << '\n';
+      }
+    }
+  }
+
+  nf << "id,role,polarity,channel,soma_x,soma_y,soma_z,n_branches,"
+        "body_voxels,fire_rate_ema\n";
+  for (const Neuron& nu : neurons_) {
+    nf << nu.id << ',' << static_cast<int>(nu.role) << ','
+       << static_cast<int>(nu.polarity) << ',' << nu.channel << ','
+       << static_cast<int>(nu.soma.x) << ','
+       << static_cast<int>(nu.soma.y) << ','
+       << static_cast<int>(nu.soma.z) << ','
+       << static_cast<int>(nu.n_branches) << ',' << nu.body.size() << ','
+       << nu.fire_rate_ema << '\n';
+  }
+
+  sf << "pre,post,pos_x,pos_y,pos_z,weight,branch,conduction_delay,"
+        "permanent,consolidation_tag\n";
+  for (const Neuron& nu : neurons_) {
+    for (const auto& syn : nu.outgoing) {
+      sf << nu.id << ',' << syn.target_neuron << ','
+         << static_cast<int>(syn.pos.x) << ','
+         << static_cast<int>(syn.pos.y) << ','
+         << static_cast<int>(syn.pos.z) << ',' << syn.weight << ','
+         << static_cast<int>(syn.branch) << ',' << syn.conduction_delay
+         << ',' << (syn.permanent ? 1 : 0) << ','
+         << syn.consolidation_tag << '\n';
+    }
+  }
+  return true;
 }
 
 // ---- Sleep: persistence layer --------------------------------------------
@@ -1450,9 +2048,9 @@ void rvec(std::ifstream& f, std::vector<T>& v) {
 bool Simulator::save_state(const char* path) const {
   std::ofstream f(path, std::ios::binary);
   if (!f) return false;
-  const char magic[4] = {'S', 'N', 'C', '4'};
+  const char magic[4] = {'S', 'N', 'C', '9'};
   f.write(magic, 4);
-  uint32_t version = 4;
+  uint32_t version = 9;
   wpod(f, version);
   wpod(f, cfg_);
   wpod(f, step_);
@@ -1480,7 +2078,11 @@ bool Simulator::save_state(const char* path) const {
     wpod(f, nu.incoming_weight_sum);
     wpod(f, nu.activity_baseline);
     wpod(f, nu.n_branches);
+    wpod(f, nu.predicted_input);
+    wpod(f, nu.excitability_bias);
     wvec(f, nu.branch_potential);
+    wvec(f, nu.branch_threshold);
+    wvec(f, nu.branch_passive_gain);
     wvec(f, nu.body);
     wvec(f, nu.incoming_queue);
 
@@ -1493,14 +2095,25 @@ bool Simulator::save_state(const char* path) const {
       wpod(f, syn.last_active_step);
       wpod(f, syn.eligibility);
       wpod(f, syn.consolidation_tag);
+      uint8_t perm = syn.permanent ? 1 : 0;
+      wpod(f, perm);
       wpod(f, syn.conduction_delay);
       wpod(f, syn.branch);
+      wpod(f, syn.vesicle_state);
       wpod(f, syn.delivered_count);
       wpod(f, syn.caused_fire_count);
       wpod(f, syn.last_delivery_step);
       wvec(f, syn.transit);
     }
   }
+  // Per-class engram membership tables. Variable-length: outer count
+  // followed by each class's vector.
+  uint64_t n_classes = engram_members_.size();
+  wpod(f, n_classes);
+  for (const auto& v : engram_members_) wvec(f, v);
+  uint64_t n_regions = class_regions_.size();
+  wpod(f, n_regions);
+  for (const auto& r : class_regions_) wpod(f, r);
   return f.good();
 }
 
@@ -1509,10 +2122,10 @@ bool Simulator::load_state(const char* path) {
   if (!f) return false;
   char magic[4];
   f.read(magic, 4);
-  if (std::memcmp(magic, "SNC4", 4) != 0) return false;
+  if (std::memcmp(magic, "SNC9", 4) != 0) return false;
   uint32_t version;
   rpod(f, version);
-  if (version != 4) return false;
+  if (version != 9) return false;
 
   rpod(f, cfg_);
   rpod(f, step_);
@@ -1548,7 +2161,11 @@ bool Simulator::load_state(const char* path) {
     rpod(f, nu.incoming_weight_sum);
     rpod(f, nu.activity_baseline);
     rpod(f, nu.n_branches);
+    rpod(f, nu.predicted_input);
+    rpod(f, nu.excitability_bias);
     rvec(f, nu.branch_potential);
+    rvec(f, nu.branch_threshold);
+    rvec(f, nu.branch_passive_gain);
     rvec(f, nu.body);
     rvec(f, nu.incoming_queue);
 
@@ -1562,14 +2179,27 @@ bool Simulator::load_state(const char* path) {
       rpod(f, syn.last_active_step);
       rpod(f, syn.eligibility);
       rpod(f, syn.consolidation_tag);
+      uint8_t perm;
+      rpod(f, perm);
+      syn.permanent = perm != 0;
       rpod(f, syn.conduction_delay);
       rpod(f, syn.branch);
+      rpod(f, syn.vesicle_state);
       rpod(f, syn.delivered_count);
       rpod(f, syn.caused_fire_count);
       rpod(f, syn.last_delivery_step);
       rvec(f, syn.transit);
     }
   }
+  uint64_t n_classes = 0;
+  rpod(f, n_classes);
+  engram_members_.assign(static_cast<std::size_t>(n_classes),
+                          std::vector<uint32_t>{});
+  for (auto& v : engram_members_) rvec(f, v);
+  uint64_t n_regions = 0;
+  rpod(f, n_regions);
+  class_regions_.assign(static_cast<std::size_t>(n_regions), ClassRegion{});
+  for (auto& r : class_regions_) rpod(f, r);
   return f.good();
 }
 
