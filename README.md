@@ -54,14 +54,41 @@ This is the cumulative outcome of the whole pack history. The road there:
 - **Vocabulary expansion 12 → 16 → 20** — added number basics
   (one..four) and colour basics (red, green, blue, yellow); 8
   semantic groups in total.
-- **Pack 26-A.tune.lite — cochlear pathway** (`8dfd007`) — 8 cochlea
-  bins → 8 A1 cells via direct labelled-line (weight 0.55, delay 13);
-  A1 → motor plastic at weight 0.0 grown by STDP. Peterson-Barney
-  1952 vowel formants over Greenwood 1990 log-frequency cochlear
-  bins. After **5 prior reverts** pre-Phase-1, the cochlear pathway
+- **Pack 26-A.tune.lite — cochlear pathway** — 8 cochlea bins → 8
+  A1 cells via direct labelled-line (weight 0.55, delay 13); A1 →
+  motor plastic at weight 0.0 grown by STDP. Peterson-Barney 1952
+  vowel formants over Greenwood 1990 log-frequency cochlear bins.
+  After **5 prior reverts** pre-Phase-1, the cochlear pathway
   finally lands cleanly because Phase 1's AXON × DENDRITE rule
   prevents the spurious organic A1↔motor contacts that broke every
   prior attempt.
+- **Pack 26-B.tune.lite — visual organ** — 8 V1 simple cells with
+  Hubel & Wiesel 1962 orientation-tuned receptive fields (4
+  horizontal + 4 vertical). retina → V1 permanent at weight 0.15
+  (3-of-4 receptive-field pixels co-firing crosses threshold);
+  V1 → motor plastic at weight 0.0 grown by STDP.
+- **Pack 26-C — motor speech (closed loop)** — 5 articulators
+  (jaw / tongue_tip / tongue_body / lips / glottis) + 20 premotor
+  sequencer cells. Each word's articulator pattern hand-tuned to
+  its dominant phonemes (DIVA template). Articulators feed back
+  into the cochlea via permanent labelled-line so the brain
+  hears its own articulator firings — corollary discharge /
+  efference copy.
+- **Pack 27 — network diagnostics** — read-only `network_stats`
+  API + `cmd_diagnose` printing degree distribution, top-K hubs,
+  weight + activity summaries. Used for hub identification toward
+  a future workspace population.
+- **Pack 28 — predictive coding for INTERNAL/OUTPUT** — the
+  existing `apply_prediction_pattern` (INPUT-only) is now
+  available on every cell type via `set_prediction(neuron_id,
+  value)`; the integrator subtracts the prediction from incoming
+  drive (clipped at 0). Opt-in infrastructure for the deliberation
+  loop.
+- **Pack TREE MVP + behavioural** — `BranchData` struct
+  (parent_idx + depth + thickness) per body voxel; sprouting now
+  leaf-biased + per-polarity-directional. Cells visibly extend in
+  their preferred axis (pyramidal apical +z, PV lateral, SST
+  ascending, VIP lateral) — neuron-shaped morphology.
 
 ---
 
@@ -431,16 +458,26 @@ bootstrap + teach mom / dad / baby):
 
 Each neuron is now a multi-voxel 3D shape with explicit
 DENDRITE / AXON / AXON-TRUNK roles per voxel — synapses form only
-at AXON-of-pre × DENDRITE-of-post contacts. Honest observation: the
-shapes are *clusters*, not yet recognisably **neuron-shaped**.
-Sprouting is isotropic-random today, so body voxels accumulate as
-roughly spherical blobs around the soma + template. **Pack TREE**
-(planned behavioural follow-up; the parent / depth / thickness data
-structure is already in place — see [docs/ROADMAP.md](docs/ROADMAP.md)
-Phase T) flips on leaf-biased sprouting + distal-preferring
-pruning so each cell ends up with a real neuron-like dendritic
-arbour — the user's directive: the brain should be a forest of
-actual neuron shapes, not voxel blobs.
+at AXON-of-pre × DENDRITE-of-post contacts. Pack TREE then makes
+the shapes **neuron-like** rather than spherical blobs:
+
+- Each body voxel carries `parent_idx + depth + thickness` in a
+  parallel `body_branch` vector — every cell has an explicit
+  branching topology with a soma at the root.
+- **Leaf-biased sprouting**: new growth originates from the
+  outermost voxels (highest depth) so the cell's arbour extends
+  *outward* instead of densifying the existing cluster. Sampling
+  weight ∝ (depth + 1)².
+- **Per-polarity directional sprouting**: pyramidal cells extend
+  +z apical and lateral basal; PV basket cells spread laterally;
+  SST Martinotti cells ascend; VIP cells stay lateral. Grounded
+  in DeFelipe 2013 pyramidal + Tremblay, Lee & Rudy 2016
+  interneuron-morphology references.
+
+The result is in figure 08 (regenerated after Pack TREE
+behavioural): the left panel shows a pyramidal cell with a clear
+ascending apical column and lateral basal branches — recognisably
+neuron-shaped, not a sphere.
 
 You can regenerate this figure on your own brain at any time:
 ```bash
