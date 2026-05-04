@@ -28,6 +28,7 @@ CHAT_BIN = REPO_ROOT / "build" / "snc_chat"
 ALL_WORDS = [
     "mom", "dad", "baby", "ball", "dog", "cat",
     "hi", "bye", "yes", "no", "more", "stop",
+    "one", "two", "three", "four",
 ]
 
 
@@ -94,30 +95,29 @@ def parse_metrics(out: str, session: int) -> dict:
 def session_commands(session: int, brain_path: Path) -> list:
     """Curriculum:
        - Session 1: bootstrap (babble + first 2 words)
-       - Sessions 2..12: each teaches one new word + reviews all so far
-       - Sessions 13+: pure review (all 12 words shown)
+       - Sessions 2..N: each teaches one new word + reviews all so far,
+         where N = len(ALL_WORDS) (16 with number basics)
+       - Sessions N+1..: pure review (all 16 words shown)
     """
     cmds = []
+    n_words = len(ALL_WORDS)
     if session == 1:
         cmds.append("babble 30")
         for w in ALL_WORDS[:2]:
             cmds.extend([f"teach {w}", "correct",
                           f"teach {w}", "correct"])
         taught = ALL_WORDS[:2]
-    elif session <= 12:
+    elif session <= n_words:
         cmds.append("babble 8")
-        new_word = ALL_WORDS[session - 1] if session - 1 < len(ALL_WORDS) else None
+        new_word = ALL_WORDS[session - 1] if session - 1 < n_words else None
         if new_word and new_word not in ALL_WORDS[:session - 1]:
             cmds.extend([f"teach {new_word}", "correct",
                           f"teach {new_word}", "correct"])
         taught = ALL_WORDS[:session]
         # Spaced rehearsal: every 3rd teaching session also re-teaches
-        # the OLDEST word once. This is the empirically validated
-        # human-learning curriculum: spaced repetition of older
-        # material during new acquisition gives a ~2x retention
-        # advantage over massed repetition. Without this, the
-        # earliest words quietly drift away as the brain's substrate
-        # changes (neurogenesis, demand-grow, new synapse formation).
+        # the OLDEST word once. Empirically validated human-learning
+        # curriculum: spaced repetition during new acquisition gives a
+        # ~2x retention advantage over massed repetition.
         if session >= 4 and session % 3 == 0:
             oldest = ALL_WORDS[0]
             cmds.extend([f"teach {oldest}", "correct"])
