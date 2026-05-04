@@ -26,16 +26,24 @@ designed to do — encode tissue that exists but isn't synapse-eligible.
 ## Dependency graph
 
 ```
-                              Pack P-lite v2             (OPTIMISATION)
+                              Pack P-lite v2             (LANDED)
                               (parallel work queue)
                                 │
                                 ▼
-                              Pack ZZ                    (HARD prereq)
+                              Pack ZZ                    (LANDED)
                               (microglial pruning)
                                 │
                                 ▼
-                              Pack M                     (FOUNDATIONAL)
-                              (real neuron shapes)
+                              Pack M v2                  (LANDED)
+                              (real neuron shapes,
+                               BLOCKED-stamped)
+                                │
+                                ▼
+                              Phase 1 morphology refactor (HARD prereq
+                              (AXON × DENDRITE                  for organs)
+                               synaptogenesis,
+                               role-aware sprouting,
+                               docs/MORPHOLOGY_REFACTOR.md)
                                 │
                 ┌───────────────┼─────────────────┐
                 ▼               ▼                 ▼
@@ -404,7 +412,17 @@ struct SimConfig {
 
 ### Pack 26-A.tune (retry) — Cochlear pathway
 
-**Status**: blocked on Pack ZZ. Architecture playbook lives in
+**Status**: BLOCKED — 5 reverts. Pack ZZ + Pack M provide substrate
+headroom but the cochlear pathway introduces dynamic perturbations
+that destabilise the curriculum equilibrium. Real fix is Phase 1
+morphology refactor (AXON × DENDRITE synaptogenesis); see
+`docs/MORPHOLOGY_REFACTOR.md`.
+
+5th attempt (post-Pack-ZZ + Pack-M, 2026-05-04): with pre-wired
+A1→motor 75% s15, anatomy-only 67%, no-prewire-with-acoustic 50%.
+Pack M v2 baseline (91.7%) restored.
+
+The architecture playbook lives in
 `~/.claude/projects/-home-chanyoung-snc/memory/snc_pack26a_status.md`.
 
 **Why** (User Directive 1): the brain must receive sound through a simulated
@@ -842,13 +860,14 @@ warrant a focused investigation pack rather than feature work.
 | 0a | Pack P-lite v1 (event-driven dispatch) | LANDED | — |
 | 0a | Pack P-lite v2 (parallel workers)      | LANDED | — |
 | 1  | Pack ZZ (microglial pruning)           | LANDED | —       |
-| 1' | Pack M  (morphology templates)         | LANDED | —       |
-| A | Pack 26-A.tune retry                    | 1      | 3.5–5   |
-| A | Pack 26-B (visual)                      | 1.5    | 5–6.5   |
-| A | Pack 26-C (motor speech)                | 2–3    | 7–9.5   |
-| B | Pack 27 (diagnostics)                   | 1      | 8–10.5  |
-| B | Pack 28 (predictive coding)             | 1–2    | 9–12.5  |
-| C | Pack 29 (counting + 2-word)             | 3–5    | 12–17.5 |
+| 1' | Pack M v2 (morphology, BLOCKED stamps) | LANDED | —       |
+| 2  | Phase 1 morphology refactor            | 3      | 3       |
+| A | Pack 26-A.tune retry (after Phase 1)    | 1      | 4       |
+| A | Pack 26-B (visual)                      | 1.5    | 5.5     |
+| A | Pack 26-C (motor speech)                | 2–3    | 7.5–8.5 |
+| B | Pack 27 (diagnostics)                   | 1      | 8.5–9.5 |
+| B | Pack 28 (predictive coding)             | 1–2    | 9.5–11.5|
+| C | Pack 29 (counting + 2-word)             | 3–5    | 12.5–16.5 |
 
 **Total to user-directive-4 goal**: ~2.5–3.5 weeks of focused work,
 assuming no compounding regressions. Pack ZZ comes first because the
