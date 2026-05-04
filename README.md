@@ -668,6 +668,20 @@ two-word combinations) → Pack 30+.
 
 ---
 
+## About the author
+
+**Chanyoung Park** — author of SNC, currently **open to work**.
+
+- GitHub: [@blazer502](https://github.com/blazer502)
+- Email: [ppoo1220@gmail.com](mailto:ppoo1220@gmail.com)
+- Google Scholar: [Chanyoung Park](https://scholar.google.com/citations?user=zajmzf4AAAAJ)
+
+If you're hiring for computational / theoretical neuroscience, biologically
+grounded AI architectures, or systems engineering roles where this kind of
+ground-up modelling is useful, please reach out.
+
+---
+
 ## Notes
 
 - `(X * Y) % 32 == 0` is required so z-slice parallelism never causes two
