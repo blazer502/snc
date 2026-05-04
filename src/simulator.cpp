@@ -33,6 +33,7 @@ Simulator::Simulator(SimConfig cfg)
       astrocyte_ca_(static_cast<std::size_t>(energy_.rX()) *
                         energy_.rY() * energy_.rZ(),
                     0.0f),
+      delivery_ring_(kDeliveryRingSize),
       rng_(cfg.seed) {}
 
 bool Simulator::try_set_neuron(int x, int y, int z, uint32_t owner_id) {
@@ -168,6 +169,16 @@ void Simulator::grow_volume(int dx, int dy, int dz) {
       e.pos.x = static_cast<int16_t>(e.pos.x + dx);
       e.pos.y = static_cast<int16_t>(e.pos.y + dy);
       e.pos.z = static_cast<int16_t>(e.pos.z + dz);
+    }
+  }
+
+  // Pack P-lite: shift in-flight delivery events too, so spike volleys
+  // launched before the grow still arrive at the right post.
+  for (auto& slot : delivery_ring_) {
+    for (auto& ev : slot) {
+      ev.pos.x = static_cast<int16_t>(ev.pos.x + dx);
+      ev.pos.y = static_cast<int16_t>(ev.pos.y + dy);
+      ev.pos.z = static_cast<int16_t>(ev.pos.z + dz);
     }
   }
 
@@ -723,6 +734,9 @@ void Simulator::reset_dynamics() {
       syn.transit.clear();
     }
   }
+  // Pack P-lite: drop any in-flight delivery events too. The ring
+  // buffer is transient state; it does not survive a dynamics reset.
+  for (auto& slot : delivery_ring_) slot.clear();
 }
 
 void Simulator::set_excitability_bias(uint32_t neuron_id, float value) {
@@ -1222,51 +1236,61 @@ void Simulator::homeostatic_phase() {
 }
 
 void Simulator::fire_dispatch_phase() {
-  // Stage 3: when a neuron fires, push a SpikePacket onto each outgoing
-  // synapse's transit queue. The forwarding decision is deterministic
-  // given local state: when the soma's region energy is below
-  // `forward_min_energy`, only synapses whose own weight is at least
-  // `forward_low_energy_floor` get to enqueue. This mirrors the fact that
-  // ATP-starved axons still successfully transmit through the strongest
-  // synaptic boutons (large vesicle pools), while weaker boutons fail.
+  // Pack P-lite: when a neuron fires, push one DeliveryEvent per
+  // outgoing synapse into the central ring buffer slot at
+  // `(step + conduction_delay) % ring_size`. The next time the
+  // simulator reaches that step, `event_dispatch_phase` pulls the
+  // events and processes them. Replaces the per-synapse transit
+  // queue: work is now proportional to spike traffic.
+  //
+  // Forwarding is deterministic given local state: when the soma's
+  // region energy is below `forward_min_energy`, only synapses whose
+  // own weight is at least `forward_low_energy_floor` enqueue --
+  // ATP-starved axons still transmit through their strongest boutons.
   for (Neuron& nu : neurons_) {
     if (!nu.fired_this_step) continue;
     const float soma_e = energy_.energy_at(nu.soma.x, nu.soma.y, nu.soma.z);
     const bool starved = soma_e < cfg_.forward_min_energy;
     // All three inhibitory subtypes (PV, SST, VIP) flip the spike sign
-    // -- they all release GABA. The downstream effect differs by where
-    // their synapses land (PV soma, SST dendrite branches, VIP usually
-    // onto SST), but the polarity flip itself is uniform.
+    // -- they all release GABA. Downstream effect differs by where
+    // their synapses land (perisomatic vs dendritic) but the polarity
+    // flip on dispatch is uniform.
     const bool inhibitory =
         (nu.polarity == NeuronPolarity::INHIBITORY ||
          nu.polarity == NeuronPolarity::INHIBITORY_SST ||
          nu.polarity == NeuronPolarity::INHIBITORY_VIP);
     const float sign = inhibitory ? -1.0f : 1.0f;
-    for (auto& syn : nu.outgoing) {
+    const uint32_t pre_id = nu.id;
+    for (uint32_t i = 0; i < nu.outgoing.size(); ++i) {
+      const SynapseEdge& syn = nu.outgoing[i];
       if (starved && syn.weight < cfg_.forward_low_energy_floor) continue;
-      SpikePacket pk;
-      pk.magnitude = sign * syn.weight;
-      pk.delay_remaining = syn.conduction_delay;
-      syn.transit.push_back(pk);
+      const int delay = std::max(1, syn.conduction_delay);
+      const int slot = (step_ + delay) % kDeliveryRingSize;
+      delivery_ring_[slot].push_back({
+          pre_id, i, syn.target_neuron, syn.branch,
+          sign * syn.weight, syn.pos});
     }
   }
 }
 
-void Simulator::scheduler_dispatch_phase() {
-  // Stage 4: the scheduler advances every in-flight spike by one voxel
-  // step and delivers any whose conduction delay has elapsed. Delivery
-  // pushes the magnitude into the post neuron's incoming queue (queue 1
-  // for the next cycle), updates synapse use accounting and pays the
-  // synapse-use energy cost from the synapse's local region.
+void Simulator::event_dispatch_phase() {
+  // Pack P-lite (Option B, hybrid event-driven dispatch). Pulls all
+  // DeliveryEvents whose conduction-delay matures at the current
+  // step from the central ring buffer and processes them. Each event
+  // carries everything the worker needs (pre id, syn index, post id,
+  // branch, signed magnitude, synapse voxel) -- no scan over inactive
+  // synapses. Work is proportional to spike traffic, matching the way
+  // real cortex computes (spike events propagating through the
+  // connectome) instead of a uniform per-step scan.
+  //
+  // STP recovery still runs as a BSP scan over all synapses (slow
+  // timescale; fine to keep BSP). STDP-LTP fires inside `stdp_phase`
+  // separately when the post fires within the window after delivery.
   std::uniform_real_distribution<float> u(0.0f, 1.0f);
   const bool stochastic =
       cfg_.release_probability > 0.0f && cfg_.release_probability < 1.0f;
   const bool stp_active =
       cfg_.release_depression > 0.0f || cfg_.release_recovery > 0.0f;
-
-  // Short-term plasticity recovery: every step, every synapse refills
-  // a fraction `release_recovery` of its vesicle pool, capped at 1.0.
-  // Depression is applied per release in the delivery loop below.
   if (cfg_.release_recovery > 0.0f) {
     for (Neuron& pre : neurons_) {
       for (auto& syn : pre.outgoing) {
@@ -1276,101 +1300,64 @@ void Simulator::scheduler_dispatch_phase() {
     }
   }
 
-  for (Neuron& pre : neurons_) {
-    for (auto& syn : pre.outgoing) {
-      if (syn.transit.empty()) continue;
-      // Advance every packet by one step.
-      for (auto& pk : syn.transit) --pk.delay_remaining;
-      // Deliver any that have arrived.
-      auto write = syn.transit.begin();
-      for (auto read = syn.transit.begin(); read != syn.transit.end(); ++read) {
-        if (read->delay_remaining > 0) {
-          if (write != read) *write = *read;
-          ++write;
-          continue;
-        }
-        // Stochastic vesicle release: a real synapse fails to release
-        // its vesicle with probability ~50% per spike. The dropped
-        // packet still counts as "consumed" for scheduling purposes
-        // but never reaches the post -- baseline noise that helps the
-        // network escape deterministic attractors.
-        const bool released =
-            !stochastic || u(rng_) < cfg_.release_probability;
-        if (!released) {
-          // Drop without delivering. Bookkeeping still advances so the
-          // synapse doesn't appear "stuck". Energy cost is *not* paid
-          // because no vesicle was actually released.
-          continue;
-        }
-        if (syn.target_neuron > 0 && syn.target_neuron <= neurons_.size()) {
-          Neuron& post = neurons_[syn.target_neuron - 1];
-          // Deliver to the right dendritic branch -- multi-compartment
-          // neurons see this synapse contribute only to its own dendrite.
-          // Default n_branches = 1 → branch must be 0, so this is the
-          // single integrator the legacy code already exercised.
-          if (post.branch_potential.size() != post.n_branches) {
-            post.branch_potential.assign(post.n_branches, 0.0f);
-          }
-          uint8_t b = syn.branch;
-          if (b >= post.n_branches) b = 0;
-          // Short-term-plasticity: scale magnitude by vesicle pool
-          // fraction, then deplete the pool by `release_depression`.
-          // No-op if STP is disabled (default).
-          const float effective =
-              stp_active ? read->magnitude * syn.vesicle_state
-                         : read->magnitude;
-          post.branch_potential[b] += effective;
-          if (cfg_.release_depression > 0.0f) {
-            syn.vesicle_state -= cfg_.release_depression;
-            if (syn.vesicle_state < 0.0f) syn.vesicle_state = 0.0f;
-          }
-          // Astrocyte calcium: each release adds a tiny contribution to
-          // the local region's Ca2+ accumulator. The astrocyte reports
-          // "this patch is working hard"; stdp_phase reads this as a
-          // local plasticity-gain modulator.
-          if (cfg_.astrocyte_release_increment > 0.0f &&
-              !astrocyte_ca_.empty()) {
-            const int R = energy_.region_size();
-            const std::size_t idx = std::size_t(syn.pos.x / R) +
-                                     std::size_t(syn.pos.y / R) *
-                                         energy_.rX() +
-                                     std::size_t(syn.pos.z / R) *
-                                         energy_.rX() * energy_.rY();
-            if (idx < astrocyte_ca_.size()) {
-              astrocyte_ca_[idx] += cfg_.astrocyte_release_increment;
-            }
-          }
+  const int slot = step_ % kDeliveryRingSize;
+  auto& events = delivery_ring_[slot];
+  for (const DeliveryEvent& ev : events) {
+    if (ev.pre_id == 0 || ev.pre_id > neurons_.size()) continue;
+    Neuron& pre = neurons_[ev.pre_id - 1];
+    if (ev.syn_idx >= pre.outgoing.size()) continue;
+    SynapseEdge& syn = pre.outgoing[ev.syn_idx];
+    // The pre may have lost / replaced the synapse since the event was
+    // scheduled (pruning, re-allocation). A cheap sanity check on the
+    // cached target_neuron filters such stale events.
+    if (syn.target_neuron != ev.target_neuron) continue;
 
-          // LTD half of STDP: if the post fired *before* this delivery
-          // arrived, the spike is too late to be causal. The same NMDA /
-          // CaMKII / AMPA pathway that mediates LTP runs in reverse and
-          // removes receptors, weakening the synapse. Strictly local --
-          // we look only at the post's last_fire_step, which the synapse
-          // already needs to know about its own target.
-          // Permanent (engram) synapses are exempt from STDP-LTD on
-          // late delivery: the tagged-and-captured spine maintains its
-          // AMPA receptors against per-event acausal weakening.
-          if (!syn.permanent) {
-            const int dt = step_ - post.last_fire_step;
-            if (dt > 0 && dt <= cfg_.stdp_window) {
-              const float kernel =
-                  std::exp(-static_cast<float>(dt) / cfg_.stdp_tau);
-              syn.weight -= cfg_.stdp_a_ltd * kernel;
-              if (syn.weight < 0.0f) syn.weight = 0.0f;
-            }
-          }
-        }
-        syn.last_delivery_step = step_;
-        syn.last_active_step = step_;
-        ++syn.delivered_count;
-        // Synapse use depletes a tiny amount of local energy.
-        float& e = energy_.energy_at(syn.pos.x, syn.pos.y, syn.pos.z);
-        e -= cfg_.synapse_use_cost;
-        if (e < 0.0f) e = 0.0f;
-      }
-      syn.transit.erase(write, syn.transit.end());
+    const bool released = !stochastic || u(rng_) < cfg_.release_probability;
+    if (!released) continue;  // failed vesicle release
+
+    if (ev.target_neuron == 0 || ev.target_neuron > neurons_.size()) continue;
+    Neuron& post = neurons_[ev.target_neuron - 1];
+    if (post.branch_potential.size() != post.n_branches) {
+      post.branch_potential.assign(post.n_branches, 0.0f);
     }
+    uint8_t b = ev.branch;
+    if (b >= post.n_branches) b = 0;
+    const float effective = stp_active ? ev.magnitude * syn.vesicle_state
+                                        : ev.magnitude;
+    post.branch_potential[b] += effective;
+    if (cfg_.release_depression > 0.0f) {
+      syn.vesicle_state -= cfg_.release_depression;
+      if (syn.vesicle_state < 0.0f) syn.vesicle_state = 0.0f;
+    }
+    if (cfg_.astrocyte_release_increment > 0.0f && !astrocyte_ca_.empty()) {
+      const int R = energy_.region_size();
+      const std::size_t idx = std::size_t(ev.pos.x / R) +
+                               std::size_t(ev.pos.y / R) * energy_.rX() +
+                               std::size_t(ev.pos.z / R) *
+                                   energy_.rX() * energy_.rY();
+      if (idx < astrocyte_ca_.size()) {
+        astrocyte_ca_[idx] += cfg_.astrocyte_release_increment;
+      }
+    }
+    // STDP-LTD on acausal delivery: if the post fired before this
+    // spike arrived, weaken the synapse. Permanent (engram) synapses
+    // are exempt from per-event acausal weakening.
+    if (!syn.permanent) {
+      const int dt = step_ - post.last_fire_step;
+      if (dt > 0 && dt <= cfg_.stdp_window) {
+        const float kernel = std::exp(-static_cast<float>(dt) / cfg_.stdp_tau);
+        syn.weight -= cfg_.stdp_a_ltd * kernel;
+        if (syn.weight < 0.0f) syn.weight = 0.0f;
+      }
+    }
+    syn.last_delivery_step = step_;
+    syn.last_active_step = step_;
+    ++syn.delivered_count;
+    float& e = energy_.energy_at(ev.pos.x, ev.pos.y, ev.pos.z);
+    e -= cfg_.synapse_use_cost;
+    if (e < 0.0f) e = 0.0f;
   }
+  events.clear();
 }
 
 void Simulator::pruning_phase() {
@@ -1603,7 +1590,7 @@ void Simulator::step() {
   stdp_phase();
   heterosynaptic_phase();
   fire_dispatch_phase();
-  scheduler_dispatch_phase();
+  event_dispatch_phase();         // Pack P-lite: replaces scheduler
   homeostatic_phase();
   pruning_phase();
   energy_regen_phase();
@@ -2136,6 +2123,10 @@ bool Simulator::load_state(const char* path) {
   grid_ = BrainGrid(cfg_.X, cfg_.Y, cfg_.Z);
   energy_ = EnergyField(cfg_.X, cfg_.Y, cfg_.Z, cfg_.region_size,
                         cfg_.energy_max);
+  // Pack P-lite: the delivery ring is transient state; loaded brains
+  // resume with no events in flight (a brief delivery-gap in the
+  // first few steps is harmless and matches `reset_dynamics`).
+  for (auto& slot : delivery_ring_) slot.clear();
 
   rvec(f, grid_.raw_front());
   rvec(f, energy_.raw_data());
