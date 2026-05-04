@@ -995,6 +995,69 @@ integration.
 
 ---
 
+## Pack V — multimodal external validation (LANDED)
+
+User directive 2026-05-04: *"we need more validation method. For the
+easy access, we can use MNIST and CIFRA dataset with voice for
+multi-modal dataset"*. The lifetime sweep validates the brain on its
+own canonical 4-pixel patterns; Pack V validates against an external,
+real-world dataset (MNIST handwritten digits) paired with the spoken
+digit name (cochlea voice modality).
+
+**Deliverables (landed):**
+- `image_teach <word> p0..p15` — present arbitrary 4×4 pixel pattern
+  jointly with the cochlea voice for `<word>` and the label features.
+  Mirrors `cmd_teach` but binds an externally-supplied image rather
+  than the canonical `kImageBits[c]`.
+- `image_test p0..p15` — visual-only readout (no label, no voice). The
+  motor argmax is the brain's classification.
+- `scripts/prep_mnist.py` — fetches MNIST, mean-pools 28×28 → 4×4,
+  binarises at intensity 64/255, writes `data/mnist_{train,test}.csv`.
+  Subset to digits 1–4 to match existing `one`/`two`/`three`/`four`
+  vocabulary.
+- `scripts/run_mnist.py` — drives `snc_chat`: optional bootstrap +
+  train + visual-only test. Reports per-class accuracy in two modes:
+  `open` (argmax over 20 vocabulary) and `forced` (argmax restricted
+  to the 4 digit words).
+
+**First empirical run (warm-started from `lifetime_brain.snc`,
+30 train + 20 test per digit):**
+
+| mode   | overall | one | two | three | four |
+| :----- | :-----: | :-: | :-: | :---: | :--: |
+| open   |  2.5%   | 5%  | 5%  | 0%    | 0%   |
+| forced | 21.2%   | 55% | 15% | 5%    | 10%  |
+
+**Interpretation (honest).** Forced-argmax is at chance (25%) on a
+4-class problem; open-argmax is *below* the 5% per-class chance baseline
+on 20 classes because the brain's previously-consolidated engrams for
+`ball` / `baby` / `mom` / `dad` partially overlap MNIST stroke pixels
+and dominate the readout. This exposes two architectural limits:
+
+1. **The 4×4 retina is too coarse for stroke recognition.** Even after
+   mean-pooling, MNIST digits collapse to 1–4 lit pixels and most
+   different digits become mutually indistinguishable (e.g. `1` and `4`
+   both centre-column-dominated).
+2. **Voice/label engrams dominate visual binding.** With only 30
+   training samples per class against pre-consolidated phonemic
+   engrams, image-to-motor weight changes can't override the existing
+   pixel-pattern → motor associations.
+
+**Pack V's value is the framework, not the accuracy.** It provides a
+reproducible external benchmark that future packs (retina expansion,
+extended training) can score against, replacing the prior "lifetime
+sweep on canonical 4-pixel patterns" which the brain had already
+saturated at 100%.
+
+**Pack VR (next, sketch):** retina expansion 4×4 → 8×8 or 16×16, with
+V1 receptive fields tiled accordingly (more orientation/location
+columns), and a CIFAR-10 prep pipeline using the existing 4-class
+vocabulary (`cat`, `dog`, `ball` already in `kWords`; needs `bird`,
+`car`, ...). Expected to also require label-engram regularisation so
+that visual binding can compete during multi-modal teaching.
+
+---
+
 ## Phase D — Beyond pre-adolescent
 
 ### Pack 30+ (sketch)
@@ -1071,6 +1134,8 @@ warrant a focused investigation pack rather than feature work.
 | C | Pack 29 v1 (cmd_pair_teach API)         | LANDED | —       |
 | C | Pack 29 v2 (sequence-prediction behaviour) | 2–3 | 2–3     |
 | C | Pack 29 v3 (counting / quantity binding) | 2–3 | 4–6     |
+| V | Pack V (MNIST + voice multimodal validation) | LANDED | — |
+| V'| Pack VR (retina expansion + CIFAR + label-engram regularisation) | 3–5 | — |
 | T | Pack TREE MVP — branch data structure       | LANDED | — |
 | T' | Pack TREE behavioural (leaf-biased + directional sprout) | LANDED | — |
 | Φ | Pack Φ — consciousness deliberation loop (user-triggered) | 2–5 | — |
