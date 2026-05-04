@@ -280,6 +280,41 @@ struct StepStats {
   int spikes = 0;
 };
 
+// Pack 27 -- network diagnostics. Read-only summary of the current
+// connectome's topology, useful for (a) inspecting whether the
+// network has acquired the small-world / lognormal-degree signature
+// of real cortex (Buzsáki & Mizuseki 2014, Bullmore & Sporns 2012),
+// and (b) identifying high-degree hub cells that a future Pack Φ
+// workspace population can be assembled from. Costs O(N + E) per
+// query; intended for sporadic diagnostic calls (e.g. `cmd_diagnose`),
+// not per-step computation.
+struct HubInfo {
+  uint32_t neuron_id;     // 1-based
+  int      in_degree;     // count of incoming synapses
+  int      out_degree;    // count of outgoing synapses
+  int      total_degree;  // in + out
+  Voxel    soma;
+};
+struct NetworkStats {
+  int   n_neurons = 0;
+  int   n_synapses = 0;
+  int   n_permanent = 0;
+  // Degree distribution.
+  float mean_in_degree = 0.0f;
+  float mean_out_degree = 0.0f;
+  int   max_in_degree = 0;
+  int   max_out_degree = 0;
+  float std_total_degree = 0.0f;
+  // Synapse weight distribution.
+  float mean_weight = 0.0f;
+  float max_weight = 0.0f;
+  // Activity distribution.
+  int   n_active = 0;             // fire_rate_ema > 0.05
+  float mean_fire_rate_ema = 0.0f;
+  // Top-K hubs by total degree.
+  std::vector<HubInfo> top_hubs;
+};
+
 // Position-binned neuron features (cortical-map-style instrumentation).
 // Each populated bin (one `region_size` cube) reports aggregate statistics
 // over the neurons whose soma lives there. Two roles:
@@ -453,6 +488,13 @@ class Simulator {
   // Statistics for the most-recently completed step. Updated at the end of
   // step(). Useful for plotting synaptogenesis / pruning curves.
   const StepStats& last_stats() const noexcept { return last_stats_; }
+
+  // Pack 27: compute a snapshot of the connectome's network
+  // topology. Walks every neuron's outgoing synapses to build the
+  // degree distribution, picks the top-K cells by total degree as
+  // candidate hubs, summarises weight + activity distributions.
+  // Read-only; safe to call between steps.
+  NetworkStats network_stats(int top_k_hubs = 10) const;
 
   // Expand the simulated volume by `dx_each_side` voxels on each side along
   // the x axis (and analogously for y, z). Existing tissue is centered in

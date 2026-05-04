@@ -1471,6 +1471,33 @@ void cmd_tell(Brain& b, const std::vector<std::string>& words) {
   say("\n");
 }
 
+void cmd_diagnose(Brain& b) {
+  // Pack 27: read-only network diagnostics. Print degree
+  // distribution + top-K hubs + activity / weight summaries.
+  // Useful for inspecting whether the connectome has acquired the
+  // small-world / hub structure of real cortex (Bullmore & Sporns
+  // 2012) and for picking workspace-candidate cells (Pack Φ
+  // future).
+  const auto s = b.sim.network_stats(/*top_k_hubs=*/10);
+  say("[diagnose] N=%d  E=%d  perm=%d  active=%d/%d  "
+      "mean_w=%.3f  max_w=%.3f  rate_mean=%.4f\n",
+      s.n_neurons, s.n_synapses, s.n_permanent,
+      s.n_active, s.n_neurons,
+      s.mean_weight, s.max_weight, s.mean_fire_rate_ema);
+  say("[diagnose] degree  in: mean=%.1f max=%d  "
+      "out: mean=%.1f max=%d  total: std=%.1f\n",
+      s.mean_in_degree, s.max_in_degree,
+      s.mean_out_degree, s.max_out_degree, s.std_total_degree);
+  say("[diagnose] top hubs (by total degree):\n");
+  for (const auto& h : s.top_hubs) {
+    say("  id=%u  in=%d  out=%d  total=%d  soma=(%d,%d,%d)\n",
+        h.neuron_id, h.in_degree, h.out_degree, h.total_degree,
+        static_cast<int>(h.soma.x),
+        static_cast<int>(h.soma.y),
+        static_cast<int>(h.soma.z));
+  }
+}
+
 void cmd_status(Brain& b) {
   b.sim.refresh_position_features();
   say("[status] step=%d  neurons=%zu  synapses=%zu  "
@@ -1539,6 +1566,7 @@ bool process_line(Brain& b, const std::string& raw) {
     cmd_grow(b, dx, dy, dz);
   }
   else if (cmd == "status")  cmd_status(b);
+  else if (cmd == "diagnose") cmd_diagnose(b);
   else if (cmd == "save") {
     std::string p; is >> p;
     if (p.empty()) p = "chat_brain.snc";

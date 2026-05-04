@@ -1101,6 +1101,87 @@ std::size_t Simulator::permanent_synapse_count() const noexcept {
   return n;
 }
 
+NetworkStats Simulator::network_stats(int top_k_hubs) const {
+  NetworkStats s;
+  const int N = static_cast<int>(neurons_.size());
+  s.n_neurons = N;
+  if (N == 0) return s;
+
+  // First pass: build per-neuron in/out degree, accumulate weight
+  // distribution + permanence count.
+  std::vector<int> in_deg(N, 0);
+  std::vector<int> out_deg(N, 0);
+  double weight_sum = 0.0;
+  int weight_count = 0;
+  int permanent = 0;
+  for (int i = 0; i < N; ++i) {
+    const Neuron& pre = neurons_[i];
+    out_deg[i] = static_cast<int>(pre.outgoing.size());
+    for (const SynapseEdge& syn : pre.outgoing) {
+      if (syn.target_neuron == 0 ||
+          syn.target_neuron > static_cast<uint32_t>(N))
+        continue;
+      ++in_deg[syn.target_neuron - 1];
+      weight_sum += syn.weight;
+      if (syn.weight > s.max_weight) s.max_weight = syn.weight;
+      ++weight_count;
+      if (syn.permanent) ++permanent;
+    }
+    s.n_synapses += out_deg[i];
+  }
+  s.n_permanent = permanent;
+  s.mean_weight = weight_count > 0
+                      ? static_cast<float>(weight_sum / weight_count)
+                      : 0.0f;
+
+  // Degree summary.
+  double in_sum = 0.0, out_sum = 0.0;
+  double tot_sum = 0.0, tot_sumsq = 0.0;
+  for (int i = 0; i < N; ++i) {
+    in_sum += in_deg[i];
+    out_sum += out_deg[i];
+    if (in_deg[i] > s.max_in_degree) s.max_in_degree = in_deg[i];
+    if (out_deg[i] > s.max_out_degree) s.max_out_degree = out_deg[i];
+    const double t = in_deg[i] + out_deg[i];
+    tot_sum += t;
+    tot_sumsq += t * t;
+  }
+  s.mean_in_degree = static_cast<float>(in_sum / N);
+  s.mean_out_degree = static_cast<float>(out_sum / N);
+  const double tot_mean = tot_sum / N;
+  const double tot_var = std::max(0.0, tot_sumsq / N - tot_mean * tot_mean);
+  s.std_total_degree = static_cast<float>(std::sqrt(tot_var));
+
+  // Activity summary.
+  double rate_sum = 0.0;
+  int active = 0;
+  for (const Neuron& nu : neurons_) {
+    rate_sum += nu.fire_rate_ema;
+    if (nu.fire_rate_ema > 0.05f) ++active;
+  }
+  s.mean_fire_rate_ema = static_cast<float>(rate_sum / N);
+  s.n_active = active;
+
+  // Top-K hubs by total degree (partial_sort on a temporary index).
+  std::vector<int> idx(N);
+  for (int i = 0; i < N; ++i) idx[i] = i;
+  const int k = std::min(std::max(0, top_k_hubs), N);
+  if (k > 0) {
+    std::partial_sort(
+        idx.begin(), idx.begin() + k, idx.end(),
+        [&](int a, int b) {
+          return (in_deg[a] + out_deg[a]) > (in_deg[b] + out_deg[b]);
+        });
+    s.top_hubs.reserve(k);
+    for (int rank = 0; rank < k; ++rank) {
+      const int i = idx[rank];
+      s.top_hubs.push_back({neurons_[i].id, in_deg[i], out_deg[i],
+                            in_deg[i] + out_deg[i], neurons_[i].soma});
+    }
+  }
+  return s;
+}
+
 float Simulator::occupancy_fraction() const noexcept {
   const std::size_t vol = grid_.volume();
   if (vol == 0) return 0.0f;
