@@ -746,6 +746,16 @@ class Simulator {
   // teach episode so the bias does not contaminate later allocations.
   void set_excitability_bias(uint32_t neuron_id, float value);
 
+  // Pack 28: top-down predictive-coding hook. Sets the cell's
+  // `predicted_input` for the next chemistry phase; the integrator
+  // subtracts it from incoming synaptic drive (clipped at 0 so a
+  // prediction can suppress activity but not invert it). Cleared per
+  // step. Works for INPUT / INTERNAL / OUTPUT alike. Caller
+  // responsibility: re-set each step that the prediction should
+  // remain active. Default behaviour (no calls) leaves
+  // `predicted_input == 0` and integration is identical to legacy.
+  void set_prediction(uint32_t neuron_id, float value);
+
   // Identifies the current "session" for memory linking inside
   // `promote_engram`. Two classes promoted with the same session id
   // are considered acquired-together and share engram cells more

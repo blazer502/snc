@@ -917,6 +917,17 @@ void Simulator::set_excitability_bias(uint32_t neuron_id, float value) {
       value < 0.0f ? 0.0f : value;
 }
 
+void Simulator::set_prediction(uint32_t neuron_id, float value) {
+  // Pack 28: top-down predictive-coding hook. Sets the cell's
+  // `predicted_input` for the next chemistry phase; the integrator
+  // subtracts it from incoming synaptic drive. Cleared per step
+  // along with `input_acc`. Works for INPUT / INTERNAL / OUTPUT
+  // alike. Caller responsibility: re-call each step that the
+  // prediction should be active.
+  if (neuron_id == 0 || neuron_id > neurons_.size()) return;
+  neurons_[neuron_id - 1].predicted_input = value;
+}
+
 void Simulator::set_session_id(int session_id) {
   current_session_id_ = session_id;
 }
@@ -1271,7 +1282,18 @@ void Simulator::chemistry_phase() {
       const float effective = nu.input_acc - nu.predicted_input;
       nu.potential = effective > 0.0f ? effective : 0.0f;
     } else {
-      nu.potential = nu.potential * cfg_.potential_decay + nu.input_acc;
+      // Pack 28: predictive coding extended to INTERNAL / OUTPUT cells.
+      // A top-down `predicted_input` (set via `set_prediction`) is
+      // subtracted from the incoming synaptic drive before
+      // integration -- a perfectly-predicted activity produces no
+      // surprise and so doesn't drive the post forward. Clipped at
+      // 0: predictions can suppress, not invert. Default 0 leaves
+      // legacy behaviour unchanged.
+      const float effective_input =
+          (nu.input_acc > nu.predicted_input)
+              ? (nu.input_acc - nu.predicted_input)
+              : 0.0f;
+      nu.potential = nu.potential * cfg_.potential_decay + effective_input;
     }
     nu.input_acc = 0.0f;
     nu.predicted_input = 0.0f;
