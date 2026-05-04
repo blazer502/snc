@@ -1070,7 +1070,7 @@ warrant a focused investigation pack rather than feature work.
 | B | Pack 28 (predictive coding for INTERNAL)| LANDED | —       |
 | C | Pack 29 (counting + 2-word)             | 3–5    | 6.5–9.5 |
 | T | Pack TREE MVP — branch data structure       | LANDED | — |
-| T' | Pack TREE behavioural (leaf-biased sprout, distal prune) | 2–3 | — |
+| T' | Pack TREE behavioural (leaf-biased + directional sprout) | LANDED | — |
 | Φ | Pack Φ — consciousness deliberation loop (user-triggered) | 2–5 | — |
 
 **Total to user-directive-4 goal**: ~2.5–3.5 weeks of focused work,
