@@ -169,6 +169,24 @@ constexpr int kArticulatorPattern[kClasses][2] = {
 const char* kArticulatorName[kArticulators] = {
     "jaw", "tng_tip", "tng_bod", "lips", "glott"
 };
+
+// Pack 26-C-full: closed-loop articulator -> cochlea. Each
+// articulator's firing drives 1-2 cochlear bins corresponding to its
+// rough phonemic frequency profile, so the brain hears its own
+// articulator activations as sound (corollary discharge / efference
+// copy). With 8-bin cochlea (200..4000 Hz log-frequency):
+//   jaw       low vowel formant F1                 -> bins 0, 1
+//   tongue_tip high consonant fricative noise      -> bins 6, 7
+//   tongue_body mid formant                        -> bins 3, 4
+//   lips      bilabial low                         -> bins 1, 2
+//   glottis   voicing fundamental                  -> bin 0
+constexpr int kArticulatorCochleaBin[kArticulators][2] = {
+    /* jaw       */ {0, 1},
+    /* tongue_tip*/ {6, 7},
+    /* tongue_bod*/ {3, 4},
+    /* lips      */ {1, 2},
+    /* glottis   */ {0, -1},   // -1 = no second bin
+};
 // Per-V1-cell receptive field over the 16-pixel retina:
 //   v1[0..3] = horizontal row detectors (rows 0..3)
 //   v1[4..7] = vertical column detectors (cols 0..3)
@@ -773,6 +791,21 @@ void build_anatomy(Brain& b) {
       const int art_idx = kArticulatorPattern[c][k];
       if (art_idx < 0 || art_idx >= kArticulators) continue;
       sim.install_synapse(b.premotors[c], b.articulators[art_idx],
+                          0.55f, 2, 0, 1.0f);
+    }
+  }
+  // Pack 26-C-full: closed-loop articulator -> cochlea. The brain
+  // hears its own articulator firings via permanent labelled-line
+  // links from each articulator to the cochlear bins that match
+  // its rough phonemic frequency profile. Combined with the
+  // existing cochlea -> A1 -> motor pathway (Pack 26-A), this
+  // closes the speech loop: motor -> premotor -> articulators ->
+  // cochlea -> A1 -> motor (corollary discharge analogue).
+  for (int i = 0; i < kArticulators; ++i) {
+    for (int k = 0; k < 2; ++k) {
+      const int bin = kArticulatorCochleaBin[i][k];
+      if (bin < 0 || bin >= kCochleaBins) continue;
+      sim.install_synapse(b.articulators[i], b.cochlea[bin],
                           0.55f, 2, 0, 1.0f);
     }
   }
