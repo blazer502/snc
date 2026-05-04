@@ -1567,6 +1567,13 @@ bool process_line(Brain& b, const std::string& raw) {
   }
   else if (cmd == "status")  cmd_status(b);
   else if (cmd == "diagnose") cmd_diagnose(b);
+  else if (cmd == "dump") {
+    std::string p; is >> p;
+    if (p.empty()) p = "chat_dump";
+    const bool ok = b.sim.dump_csv(p.c_str());
+    say("[dump] %s_{voxels,neurons,synapses}.csv  %s\n",
+        p.c_str(), ok ? "ok" : "FAILED");
+  }
   else if (cmd == "save") {
     std::string p; is >> p;
     if (p.empty()) p = "chat_brain.snc";

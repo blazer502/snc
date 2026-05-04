@@ -2359,13 +2359,16 @@ bool Simulator::dump_csv(const char* prefix) const {
   std::ofstream sf(p + "_synapses.csv");
   if (!vf || !nf || !sf) return false;
 
-  vf << "x,y,z,state\n";
+  vf << "x,y,z,state,owner,role\n";
   for (int z = 0; z < grid_.Z(); ++z) {
     for (int y = 0; y < grid_.Y(); ++y) {
       for (int x = 0; x < grid_.X(); ++x) {
         const auto c = grid_.get(x, y, z);
         if (c == BrainGrid::EMPTY) continue;
-        vf << x << ',' << y << ',' << z << ',' << static_cast<int>(c) << '\n';
+        const std::size_t li = lin(x, y, z);
+        vf << x << ',' << y << ',' << z << ',' << static_cast<int>(c)
+           << ',' << owner_[li] << ','
+           << static_cast<int>(voxel_role_[li]) << '\n';
       }
     }
   }
