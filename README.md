@@ -18,9 +18,34 @@ This README explains the two complementary models that the project rests on:
 
 The detailed pack-by-pack history (what was tried, what regressed, what
 shipped) lives in the auto-memory under
-`~/.claude/projects/-home-chanyoung-snc/memory/`. The current live baseline is
-**Pack 25.1** (commit `84009ec`) — 75% accuracy at session 15 on the 12-word
-lifetime sweep.
+`~/.claude/projects/-home-chanyoung-snc/memory/`. The current live baseline
+is **20-word vocabulary expansion** (commit `ba86e66`) — **100% accuracy
+across 25 sessions** with 20/20 perfect recall in pure-review. The 20
+words span 8 semantic groups (people, objects, greetings, response,
+action, numbers, colours).
+
+This is the cumulative outcome of the whole pack history. The road there:
+
+- **Pack 24-curriculum** (75% s15 on 12 words) — spaced rehearsal of
+  the oldest word every 3 sessions.
+- **Pack 25 / 25.1** — CREB-style engram allocation, memory linking,
+  silent engrams, bias-overrides-niche.
+- **Pack P-lite v1 / v2** (83% s15 → 91.7% later) — event-driven spike
+  dispatch via a `DeliveryEvent` ring; deterministic OpenMP via
+  per-target bucketing.
+- **Pack ZZ v3** (91.7% s15) — microglial pruning (silence-age + weak
+  weight + tag-protection) with CD47/SIRPα-style protection of
+  permanent / engram synapses.
+- **Pack M v2** (91.7% s15) — real neuron shapes stamped at birth via
+  per-cell-type morphology templates.
+- **Phase 1 morphology refactor** (100% s15) — synaptogenesis becomes
+  AXON × DENDRITE only, matching real cortical chemistry. Spurious
+  NEURON × NEURON contacts no longer become synapses.
+- **Phase 1' expansion** — multi-voxel pyramidal + interneuron arbours
+  (DeFelipe 2013 pyramidal; Tremblay 2016 interneurons).
+- **Vocabulary expansion 12 → 16 → 20** — added number basics
+  (one..four) and colour basics (red, green, blue, yellow), the first
+  steps toward the Pack 29 counting + minimal-math goal.
 
 ---
 
@@ -33,7 +58,7 @@ cmake --build build -j
 # Tiny structural-only demo
 ./build/snc_demo
 
-# Conversational REPL with 12-word vocabulary
+# Conversational REPL with 20-word vocabulary
 ./build/snc_chat
 
 # 15-session lifetime sweep with the current curriculum
@@ -57,7 +82,7 @@ src/
   brain_grid.cpp      grid storage, neighbour iteration
   energy_field.cpp    regional energy bookkeeping
   simulator.cpp       phases: integrate, chemistry, STDP, ... pruning
-  chat_demo.cpp       12-word teaching REPL (the main demo)
+  chat_demo.cpp       20-word teaching REPL (the main demo)
   vocab_demo.cpp      4-word fixed-vocabulary demo (legacy)
   mom_dad_demo.cpp    minimal 2-word demo
   learn_demo.cpp      data-driven feature-classification demo
@@ -377,21 +402,23 @@ sparse-coding / winner-take-all dynamics needed for clean output decoding.
 
 ### Curriculum: how the brain learns
 
-The lifetime sweep (`scripts/run_lifetime.py`) drives 15 sessions each as a
+The lifetime sweep (`scripts/run_lifetime.py`) drives N sessions each as a
 fresh load of `snc_chat`:
 
 - Session 1: bootstrap (`babble 30` + teach mom, dad twice each).
-- Sessions 2–12: each teaches one new word (twice with reward) and probes all
-  taught so far. **Pack 24-curriculum**: every 3rd session re-teaches the
-  oldest word once (spaced rehearsal — empirically validated 2× retention
-  advantage over massed repetition).
-- Sessions 13+: pure review (no new teaching). Adding random babble or
-  imagery rehearsal hurt baseline; silent space + probes let consolidation
-  finish.
+- Sessions 2..len(ALL_WORDS): each teaches one new word (twice with reward)
+  and probes all taught so far. **Pack 24-curriculum**: every 3rd session
+  re-teaches the oldest word once (spaced rehearsal — empirically validated
+  2× retention advantage over massed repetition).
+- Sessions len(ALL_WORDS)+1..N: pure review (no new teaching). Adding random
+  babble or imagery rehearsal hurt baseline; silent space + probes let
+  consolidation finish.
 
-Current best: **75% accuracy at session 15** (9/12 words recalled correctly
-without label cues). The 12-word vocabulary is from CHILDES and the
-MacArthur-Bates CDI early-acquisition lists.
+**Current best**: **100% accuracy across 25 sessions** (20/20 words recalled
+correctly without label cues throughout pure-review). The 20-word
+vocabulary is from CHILDES and the MacArthur-Bates CDI early-acquisition
+lists, organised as 12 toddler concepts + 4 number basics + 4 colour basics
+across 8 semantic groups.
 
 ---
 
@@ -418,7 +445,8 @@ human-cortex evolution.
 
 ## Status and roadmap
 
-**Live baseline**: Pack 25.1 (`84009ec`) — 75% s15 lifetime sweep.
+**Live baseline**: 20-word vocabulary expansion (`ba86e66`) — **100%
+accuracy across 25 sessions, 20/20 perfect recall in pure-review**.
 
 **Pack history (all on `feat/snc-core-and-embodied-demo`)**: 19A engram
 protection · 19B `know/guess/unknown` protocol · 19D demand-driven growth ·
