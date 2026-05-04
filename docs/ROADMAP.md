@@ -20,12 +20,12 @@ parameter, bias-overrides-niche.
 ## Dependency graph
 
 ```
-                              Pack M                     (FOUNDATIONAL)
-                              (real neuron shapes)
-                                │
-                                ▼
                               Pack ZZ                    (HARD prereq)
                               (microglial pruning)
+                                │
+                                ▼
+                              Pack M                     (FOUNDATIONAL)
+                              (real neuron shapes)
                                 │
                 ┌───────────────┼─────────────────┐
                 ▼               ▼                 ▼
@@ -53,9 +53,20 @@ parameter, bias-overrides-niche.
 
 ---
 
-## Phase 0 — Foundational
+## Phase 0 was Pack M but reordered
 
-### Pack M — Real neuron shapes (morphology templates)
+**Pack M v1 attempted 2026-05-04 and reverted.** Even minimal templates
+(1 voxel per INTERNAL cell, INPUT/OUTPUT skipped) regressed the lifetime
+sweep to 67% s15 (vs 75% baseline). Two-voxel templates per cell regressed
+to 42% s15. The substrate-overhead pattern is identical to Pack 26-A:
+adding *any* extra structural state overruns the brain's sprout/prune
+balance. Pack M is now ordered AFTER Pack ZZ in the dependency graph
+because microglial pruning is the same prerequisite for both.
+
+The Pack M design (templates, stamping API, role/polarity-driven re-stamp)
+is preserved below for the post-Pack-ZZ retry.
+
+### Pack M — Real neuron shapes (morphology templates) [BLOCKED on Pack ZZ]
 
 **Status**: planned. Foundational. Reframes how every subsequent pack thinks
 about a "neuron" — from a point soma to an actual 3D shape.
@@ -209,7 +220,7 @@ expanding if baseline holds.
 
 ---
 
-## Phase 1 — Hard prerequisite
+## Phase 0 — Hard prerequisite (now first)
 
 ### Pack ZZ — Microglial pruning
 
@@ -740,18 +751,21 @@ warrant a focused investigation pack rather than feature work.
 
 | Phase | Pack | Days | Cumulative |
 | ----- | ---- | :--: | :--------: |
-| 0 | Pack M  (morphology templates) | 1.5–2 | 1.5–2 |
-| 1 | Pack ZZ (microglial pruning)   | 1–2   | 2.5–4 |
-| A | Pack 26-A.tune retry           | 1     | 3.5–5 |
-| A | Pack 26-B (visual)             | 1.5   | 5–6.5 |
-| A | Pack 26-C (motor speech)       | 2–3   | 7–9.5 |
-| B | Pack 27 (diagnostics)          | 1     | 8–10.5 |
-| B | Pack 28 (predictive coding)    | 1–2   | 9–12.5 |
-| C | Pack 29 (counting + 2-word)    | 3–5   | 12–17.5 |
+| 0 | Pack ZZ (microglial pruning)        | 1–2   | 1–2     |
+| 0' | Pack M  (morphology templates)     | 1.5–2 | 2.5–4   |
+| A | Pack 26-A.tune retry                | 1     | 3.5–5   |
+| A | Pack 26-B (visual)                  | 1.5   | 5–6.5   |
+| A | Pack 26-C (motor speech)            | 2–3   | 7–9.5   |
+| B | Pack 27 (diagnostics)               | 1     | 8–10.5  |
+| B | Pack 28 (predictive coding)         | 1–2   | 9–12.5  |
+| C | Pack 29 (counting + 2-word)         | 3–5   | 12–17.5 |
 
 **Total to user-directive-4 goal**: ~2.5–3.5 weeks of focused work,
-assuming no compounding regressions. Each pack is independently testable;
-the no-regressions directive applies at every step.
+assuming no compounding regressions. Pack ZZ comes first because the
+v1 attempt at Pack M proved the substrate has no headroom for *any*
+extra structural state — same constraint as Pack 26-A. After Pack ZZ
+adds active synapse shedding, both Pack M (real neuron shapes) and
+Pack 26-A (cochlear pathway) become viable.
 
 ---
 
