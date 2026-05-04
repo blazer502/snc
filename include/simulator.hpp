@@ -123,6 +123,27 @@ struct SimConfig {
   // the actin cytoskeleton no longer being able to maintain the spine.
   float spine_retraction_floor = 0.02f;
 
+  // Pack ZZ v3 -- microglial pruning. Synapse tags grow/decay inline
+  // in event_dispatch_phase + stdp_phase; the periodic
+  // microglia_phase eliminates only synapses meeting ALL these
+  // conditions:
+  //   eat_me_tag        > microglia_eat_threshold      (chronically
+  //                                                      useless)
+  //   weight            < microglia_weak_weight        (also weak)
+  //   consolidation_tag < microglia_tag_protection_max (not protected)
+  //   permanent         == false                        (not innate)
+  // Multiple conditions in concert keep the rule conservative. Real
+  // microglia preferentially prune the weakest among redundant
+  // connections rather than last-resort silent ones.
+  float microglia_tag_growth        = 0.02f;   // per useless delivery
+  float microglia_eat_threshold     = 3.0f;    // (kept for future tag-based variant)
+  float microglia_weak_weight       = 0.10f;   // weight bar
+  float microglia_tag_protection_max = 0.05f;  // consolidation_tag bar
+  int   microglia_silence_steps     = 900;     // delivery silence for eligibility
+  int   microglia_pass_period       = 500;     // steps between passes
+  int   microglia_warmup_steps      = 2500;    // no removals before this
+  int   microglia_max_remove_per_region_per_pass = 1;
+
   // BCM metaplasticity (Bienenstock-Cooper-Munro). The post's running
   // baseline activity acts as a sliding threshold for LTP. Above the
   // threshold LTP magnitude shrinks; below it normal LTP applies. The
@@ -751,6 +772,7 @@ class Simulator {
   void sprouting_phase();
   void synaptogenesis_phase();
   void pruning_phase();
+  void microglia_phase();         // Pack ZZ v3: complement-tagged elimination
   void energy_regen_phase();
 
   // Multiplier applied to STDP amplitudes from the sensitive-period

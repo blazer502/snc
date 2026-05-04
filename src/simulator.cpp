@@ -527,6 +527,10 @@ void Simulator::install_synapse(uint32_t pre_id, uint32_t post_id,
   // and the silence-timeout sweeps regardless of activity.
   edge.consolidation_tag = innate_tag;
   edge.permanent = (innate_tag > 0.0f);
+  // Pack ZZ v3: permanent synapses are CD47-protected from microglial
+  // elimination. Sentinel ~ infinity means microglia_phase never
+  // touches them regardless of their `eat_me_tag` history.
+  edge.dont_eat_me = edge.permanent ? 1e9f : 0.0f;
   pre.outgoing.push_back(edge);
 }
 
@@ -903,6 +907,9 @@ int Simulator::promote_engram(int output_channel, int top_k_internal,
       if (!s.permanent) ++n_marked;
       s.permanent = true;
       s.consolidation_tag = 1.0f;
+      // Pack ZZ v3: engram-promoted edges get CD47-style protection
+      // alongside the labelled-line priors.
+      s.dont_eat_me = 1e9f;
       if (silent) continue;  // silent engram: skip weight floor
       // Floor the engram-edge weight at half of weight_max so the
       // recall path is electrically functional even if STDP had not
@@ -1161,6 +1168,11 @@ void Simulator::stdp_phase() {
       ++syn.caused_fire_count;
       syn.eligibility +=
           cfg_.eligibility_potentiation * kernel * (1.0f + post.fire_rate_ema);
+      // Pack ZZ v3: a delivery that demonstrably caused the post to
+      // fire (LTP just applied) resets the eat-me tag to zero. The
+      // synapse is doing what cortex hired it to do; microglia leave
+      // it alone.
+      syn.eat_me_tag = 0.0f;
     }
   }
 }
@@ -1384,6 +1396,13 @@ void Simulator::event_dispatch_phase() {
     syn.last_delivery_step = step_;
     syn.last_active_step = step_;
     ++syn.delivered_count;
+    // Pack ZZ v3: a delivery that arrived AFTER the post had already
+    // fired (the STDP-LTD path above just ran) is "useless" at the
+    // moment of arrival. Bump the eat-me tag. Useful deliveries
+    // (those that cause an LTP event in stdp_phase next iteration)
+    // will reset the tag to zero. Per-target bucketing makes this
+    // per-syn write race-free across threads.
+    if (!syn.permanent) syn.eat_me_tag += cfg_.microglia_tag_growth;
     // Energy field: cross-event writes possible if events fall in the
     // same region. Atomic decrement; the < 0 clamp from the original
     // serial code is dropped here because the read-after-write pattern
@@ -1439,6 +1458,97 @@ void Simulator::pruning_phase() {
                       BrainGrid::SYNAPSE) {
                 grid_.set(syn.pos.x, syn.pos.y, syn.pos.z, BrainGrid::NEURON);
               }
+              return true;
+            }),
+        edges.end());
+    last_stats_.synapses_pruned += static_cast<int>(before - edges.size());
+  }
+}
+
+void Simulator::microglia_phase() {
+  // Pack ZZ v3 -- complement-tagged microglial elimination of surplus
+  // synapses (Xing et al. 2026 NRR; Schafer & Stevens 2013). Eat-me
+  // tags grow inline in event_dispatch_phase on every useless
+  // delivery and are reset by stdp_phase on every LTP event.
+  // Permanent / engram synapses carry `dont_eat_me = 1e9` and are
+  // never touched.
+  //
+  // Conservative-by-design: removal requires SIMULTANEOUSLY
+  //   eat_me_tag        > microglia_eat_threshold
+  //   weight            < microglia_weak_weight
+  //   consolidation_tag < microglia_tag_protection_max
+  //   permanent         == false
+  // This mirrors how real microglia preferentially prune the *weakest
+  // among redundant* connections, not last-resort silent ones. The
+  // warm-up window suppresses pruning during early development when
+  // synapses haven't had time to demonstrate usefulness; the
+  // per-region cap keeps removals localised so they cannot outpace
+  // sprouting globally.
+  if (step_ < cfg_.microglia_warmup_steps) return;
+  if (cfg_.microglia_pass_period <= 0) return;
+  if (step_ % cfg_.microglia_pass_period != 0) return;
+
+  const int rX = energy_.rX();
+  const int rY = energy_.rY();
+  const int rZ = energy_.rZ();
+  const int R  = cfg_.region_size;
+  std::vector<int> region_remove(static_cast<std::size_t>(rX) * rY * rZ, 0);
+
+  for (Neuron& pre : neurons_) {
+    auto& edges = pre.outgoing;
+    const auto before = edges.size();
+    edges.erase(
+        std::remove_if(
+            edges.begin(), edges.end(),
+            [&](const SynapseEdge& syn) {
+              if (syn.permanent) return false;
+              if (syn.dont_eat_me >= cfg_.microglia_eat_threshold) return false;
+              // Silence-age criterion: real microglia preferentially
+              // engulf synapses that have stayed silent for an
+              // extended period (Schafer & Stevens 2013). The
+              // existing `pruning_phase` only catches synapses below
+              // `spine_retraction_floor` (0.02); microglia handle the
+              // weight band 0.02 < w < weak_weight that is too strong
+              // for spine retraction but functionally redundant.
+              // Never-delivered synapses (last_delivery_step == -1)
+              // are allowed if they're old enough to have had a
+              // chance: (step_ - syn.last_active_step) doubles as
+              // "age since last activity"; a never-active synapse
+              // has last_active_step == -1 so the diff is huge and
+              // it qualifies as silent.
+              const int last = syn.last_delivery_step >= 0
+                                   ? syn.last_delivery_step
+                                   : syn.last_active_step;
+              if (last >= 0 && step_ - last < cfg_.microglia_silence_steps)
+                return false;
+              if (syn.weight     >= cfg_.microglia_weak_weight)   return false;
+              if (syn.consolidation_tag >=
+                  cfg_.microglia_tag_protection_max)              return false;
+              // Never prune the readout path. Real cortex preserves
+              // motor-area projections during developmental pruning
+              // (Stiles & Jernigan 2010 *Neuropsych. Rev.*).
+              if (syn.target_neuron > 0 &&
+                  syn.target_neuron <= neurons_.size()) {
+                const Neuron& post = neurons_[syn.target_neuron - 1];
+                if (post.role == NeuronRole::OUTPUT) return false;
+              }
+              const int rx = std::min(rX - 1,
+                                       std::max(0, syn.pos.x / R));
+              const int ry = std::min(rY - 1,
+                                       std::max(0, syn.pos.y / R));
+              const int rz = std::min(rZ - 1,
+                                       std::max(0, syn.pos.z / R));
+              const int idx = rx + ry * rX + rz * rX * rY;
+              if (region_remove[idx] >=
+                  cfg_.microglia_max_remove_per_region_per_pass)
+                return false;
+              if (grid_.in_bounds(syn.pos.x, syn.pos.y, syn.pos.z) &&
+                  grid_.get(syn.pos.x, syn.pos.y, syn.pos.z) ==
+                      BrainGrid::SYNAPSE) {
+                grid_.set(syn.pos.x, syn.pos.y, syn.pos.z,
+                          BrainGrid::NEURON);
+              }
+              ++region_remove[idx];
               return true;
             }),
         edges.end());
@@ -1636,6 +1746,7 @@ void Simulator::step() {
   event_dispatch_phase();         // Pack P-lite: replaces scheduler
   homeostatic_phase();
   pruning_phase();
+  microglia_phase();              // Pack ZZ v3
   energy_regen_phase();
   sprouting_phase();
   synaptogenesis_phase();
@@ -2078,9 +2189,9 @@ void rvec(std::ifstream& f, std::vector<T>& v) {
 bool Simulator::save_state(const char* path) const {
   std::ofstream f(path, std::ios::binary);
   if (!f) return false;
-  const char magic[4] = {'S', 'N', 'C', '9'};
+  const char magic[4] = {'S', 'N', 'C', 'A'};  // SNCA = SNC10
   f.write(magic, 4);
-  uint32_t version = 9;
+  uint32_t version = 10;
   wpod(f, version);
   wpod(f, cfg_);
   wpod(f, step_);
@@ -2133,6 +2244,8 @@ bool Simulator::save_state(const char* path) const {
       wpod(f, syn.delivered_count);
       wpod(f, syn.caused_fire_count);
       wpod(f, syn.last_delivery_step);
+      wpod(f, syn.eat_me_tag);
+      wpod(f, syn.dont_eat_me);
       wvec(f, syn.transit);
     }
   }
@@ -2152,10 +2265,10 @@ bool Simulator::load_state(const char* path) {
   if (!f) return false;
   char magic[4];
   f.read(magic, 4);
-  if (std::memcmp(magic, "SNC9", 4) != 0) return false;
+  if (std::memcmp(magic, "SNCA", 4) != 0) return false;
   uint32_t version;
   rpod(f, version);
-  if (version != 9) return false;
+  if (version != 10) return false;
 
   rpod(f, cfg_);
   rpod(f, step_);
@@ -2222,6 +2335,8 @@ bool Simulator::load_state(const char* path) {
       rpod(f, syn.delivered_count);
       rpod(f, syn.caused_fire_count);
       rpod(f, syn.last_delivery_step);
+      rpod(f, syn.eat_me_tag);
+      rpod(f, syn.dont_eat_me);
       rvec(f, syn.transit);
     }
   }

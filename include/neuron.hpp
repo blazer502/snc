@@ -94,6 +94,21 @@ struct SynapseEdge {
   uint32_t delivered_count = 0;
   uint32_t caused_fire_count = 0;
   int last_delivery_step = -1;
+
+  // Pack ZZ v3 -- microglial pruning analogue (Xing et al. 2026 NRR;
+  // Schafer & Stevens 2013). The complement-like "eat me" tag grows
+  // on every delivery that did not cause the post to fire within the
+  // STDP window (tagged-but-useless delivery) and is reset to 0 on
+  // STDP-LTP events (delivery caused the post to fire -- demonstrably
+  // useful). The "don't eat me" CD47/SIRPalpha analogue is set to a
+  // sentinel large value (1e9) on permanent / labelled-line / engram
+  // synapses so they are exempt from microglial elimination. The
+  // periodic `microglia_phase` removes a synapse only when its tag
+  // exceeds threshold AND its weight is also weak AND no
+  // consolidation tag protects it -- many simultaneous conditions to
+  // ensure only genuinely surplus connections are pruned.
+  float eat_me_tag = 0.0f;
+  float dont_eat_me = 0.0f;
 };
 
 // Functional role of a neuron in a data-driven training run.
