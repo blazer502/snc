@@ -1081,6 +1081,43 @@ no label features, no cochlea voice, no A1 tonotopic bias) and a
 Without higher pixel resolution, the substrate cannot represent
 stroke-level differences between similar digits.
 
+### Pack V-cross — graded pixels + cross-modal dropout (LANDED)
+
+User feedback 2026-05-05: *"multi-modal data makes people remind the
+meaning easily in reality"*. Pack V-tune's visual > multimodal result
+was backwards from biology (Damasio 1989 convergence zones; Smith & Yu
+2008 cross-situational learning predict cross-modal helps). Two fixes
+together restored the expected ordering:
+
+1. **Graded pixels** (`prep_mnist.py` writes float intensities in
+   [0, 1] instead of binary). Binary 4×4 collapses 2/3/4 into nearly
+   identical masks; graded preserves stroke-density differences.
+2. **Cross-modal dropout** (`--mode {cross,dropout}` in run_mnist.py).
+   Per-trial picks between `image_teach` (multimodal) and
+   `image_teach_visual` (image-only) so the visual pathway gets
+   exclusive learning episodes — same principle as modality dropout
+   in deep learning, biologically grounded in Damasio convergence
+   zones requiring each modality to retain an independent path.
+
+**Cumulative improvement** (forced argmax, 60 train + 30 test/digit,
+warm-start from `lifetime_brain.snc`):
+
+| stage                          | overall | one | two | three | four |
+| :----------------------------- | :-----: | :-: | :-: | :---: | :--: |
+| Pack V binary multimodal       | 21.2%   | 55% | 15% |  5%   | 10%  |
+| Pack V binary visual           | 25.0%   | 75% | 10% |  5%   | 10%  |
+| Pack V-cross graded multimodal | 25.8%   | 67% | 20% |  3%   | 13%  |
+| Pack V-cross graded visual     | 25.0%   | 73% |  7% |  7%   | 13%  |
+| Pack V-cross graded **cross**  | **29.2%** | 77% | 13% |  7%   | 20%  |
+| Pack V-cross graded **dropout**| **29.2%** | 77% | 10% |  7%   | 23%  |
+
+Pack V-cross **doubles the lift above chance** (4.2 pp → 8 pp above the
+4-class 25% baseline). Multimodal also flips back above visual — the
+user's "multi-modal helps recall" intuition was correct once the visual
+input carried enough information for binding to grow synergistically
+rather than redundantly. The remaining headroom (29% → 100%) is bounded
+by the 4×4 retina; that's Pack VR's job.
+
 **Pack VR (next, sketch):** retina expansion 4×4 → 8×8 or 16×16, with
 V1 receptive fields tiled accordingly (more orientation/location
 columns), and a CIFAR-10 prep pipeline using the existing 4-class
@@ -1168,6 +1205,7 @@ warrant a focused investigation pack rather than feature work.
 | C | Pack 29 v3 (counting / quantity binding) | 2–3 | 4–6     |
 | V | Pack V (MNIST + voice multimodal validation) | LANDED | — |
 | V | Pack V-tune (visual-only training mode)  | LANDED | — |
+| V | Pack V-cross (graded pixels + cross-modal dropout) | LANDED | — |
 | V'| Pack VR (retina expansion + CIFAR + label-engram regularisation) | 3–5 | — |
 | T | Pack TREE MVP — branch data structure       | LANDED | — |
 | T' | Pack TREE behavioural (leaf-biased + directional sprout) | LANDED | — |

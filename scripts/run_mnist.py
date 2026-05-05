@@ -51,7 +51,7 @@ def read_csv(path: Path):
             if len(parts) != 17:
                 continue
             label = parts[0]
-            pixels = [int(x) for x in parts[1:]]
+            pixels = [float(x) for x in parts[1:]]
             rows.append((label, pixels))
     return rows
 
@@ -63,26 +63,39 @@ def bootstrap_cmds() -> list[str]:
     return cmds
 
 
-def train_cmds(rows, mode: str = "multimodal") -> list[str]:
+def train_cmds(rows, mode: str = "multimodal", seed: int = 0) -> list[str]:
     """Build the training command sequence.
 
     Modes:
-      multimodal -- ``image_teach`` (label + voice + image)
-      visual     -- ``image_teach_visual`` (image + motor prime only)
-      curriculum -- first half multimodal, second half visual-only.
-                    Mirrors how children attach a label first, then
-                    refine the visual category through repeated
-                    exposures without naming.
+      multimodal -- ``image_teach`` only (label + voice + image)
+      visual     -- ``image_teach_visual`` only (image + motor prime)
+      curriculum -- first half multimodal, second half visual
+      cross      -- alternate every other trial (Pack V-cross). Each
+                    visual-only trial forces the image pathway to fire
+                    motor on its own, so weights cannot stay redundant.
+                    Damasio 1989 convergence zones: cross-modal binding
+                    *requires* each modality to retain an independent
+                    feed-forward path to the convergence cell.
+      dropout    -- random per-trial pick between multimodal and visual
+                    (de Sa & Ballard 1998 cross-modal LMS). Equivalent
+                    to ``modality dropout`` in deep learning.
     """
+    import random
+    rng = random.Random(seed)
     cmds = []
     n = len(rows)
     half = n // 2
     for i, (label, pixels) in enumerate(rows):
-        pixel_str = " ".join(str(p) for p in pixels)
+        pixel_str = " ".join(f"{p:.3f}" for p in pixels)
         if mode == "visual":
             verb = "image_teach_visual"
         elif mode == "curriculum":
             verb = "image_teach" if i < half else "image_teach_visual"
+        elif mode == "cross":
+            verb = "image_teach" if i % 2 == 0 else "image_teach_visual"
+        elif mode == "dropout":
+            verb = ("image_teach" if rng.random() < 0.5
+                    else "image_teach_visual")
         else:
             verb = "image_teach"
         cmds.append(f"{verb} {label} {pixel_str}")
@@ -95,7 +108,7 @@ def train_cmds(rows, mode: str = "multimodal") -> list[str]:
 def test_cmds(rows) -> list[str]:
     cmds = []
     for _, pixels in rows:
-        pixel_str = " ".join(str(p) for p in pixels)
+        pixel_str = " ".join(f"{p:.3f}" for p in pixels)
         cmds.append(f"image_test {pixel_str}")
     return cmds
 
@@ -158,9 +171,13 @@ def main(argv):
     p.add_argument("--save", type=Path, default=Path("mnist_brain.snc"))
     p.add_argument("--no-bootstrap", action="store_true")
     p.add_argument("--no-train", action="store_true")
-    p.add_argument("--mode", choices=("multimodal", "visual", "curriculum"),
+    p.add_argument("--epochs", type=int, default=1,
+                   help="passes over the training set (Pack V-cross)")
+    p.add_argument("--mode",
+                   choices=("multimodal", "visual", "curriculum",
+                            "cross", "dropout"),
                    default="multimodal",
-                   help="training mode (Pack V-tune)")
+                   help="training mode (Pack V-tune / Pack V-cross)")
     args = p.parse_args(argv[1:])
 
     train_rows = read_csv(DATA_DIR / "mnist_train.csv")
@@ -180,11 +197,13 @@ def main(argv):
 
     # Phase 2: train on MNIST images + voice + label
     if not args.no_train:
-        print(f"[mnist] phase 2: train {len(train_rows)} samples "
-              f"(mode={args.mode})")
-        out = run_chat(load_path, args.save,
-                       train_cmds(train_rows, mode=args.mode))
-        load_path = args.save
+        for ep in range(args.epochs):
+            print(f"[mnist] phase 2 ep {ep+1}/{args.epochs}: "
+                  f"train {len(train_rows)} samples (mode={args.mode})")
+            out = run_chat(load_path, args.save,
+                           train_cmds(train_rows, mode=args.mode,
+                                      seed=ep))
+            load_path = args.save
 
     # Phase 3: test (visual-only)
     print(f"[mnist] phase 3: test {len(test_rows)} samples")
