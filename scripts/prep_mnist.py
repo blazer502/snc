@@ -42,8 +42,8 @@ DIGIT_TO_WORD = {1: "one", 2: "two", 3: "three", 4: "four"}
 DIGITS = sorted(DIGIT_TO_WORD.keys())
 
 # Per-class sample counts. Keep small so the harness runs in seconds.
-N_TRAIN_PER_CLASS = 30
-N_TEST_PER_CLASS = 20
+N_TRAIN_PER_CLASS = 60
+N_TEST_PER_CLASS = 30
 
 
 def fetch(name: str) -> Path:
@@ -74,7 +74,13 @@ def read_idx(path: Path) -> list:
 
 
 def downsample_to_4x4(img: bytes, rows: int, cols: int) -> list:
-    """Mean-pool 28x28 -> 4x4, then binarise at half of max-mean."""
+    """Mean-pool 28x28 -> 4x4 grayscale (float in [0, 1]).
+
+    The simulator's image_in pixels accept any non-negative float; the
+    earlier binarised version at 64/255 collapsed e.g. ``2`` and ``3``
+    into nearly identical 4-pixel masks. Graded intensity preserves
+    stroke-density information that the V1 simple cells can resolve.
+    """
     assert rows == 28 and cols == 28
     block_r = rows // 4
     block_c = cols // 4
@@ -87,10 +93,8 @@ def downsample_to_4x4(img: bytes, rows: int, cols: int) -> list:
                     r = br * block_r + dr
                     c = bc * block_c + dc
                     s += img[r * cols + c]
-            pooled[br * 4 + bc] = s / float(block_r * block_c)
-    # Binarise at 25% of full intensity (255 * 0.25 = ~64). MNIST
-    # strokes saturate, so this gives a cleaner stroke mask.
-    return [1 if p >= 64.0 else 0 for p in pooled]
+            pooled[br * 4 + bc] = s / float(block_r * block_c) / 255.0
+    return [round(p, 3) for p in pooled]
 
 
 def write_split(name: str, rows: list[tuple[str, list[int]]]) -> None:
