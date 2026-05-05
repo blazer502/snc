@@ -1118,6 +1118,42 @@ input carried enough information for binding to grow synergistically
 rather than redundantly. The remaining headroom (29% → 100%) is bounded
 by the 4×4 retina; that's Pack VR's job.
 
+### Pack V-quiz — elementary-school number test (LANDED)
+
+User request 2026-05-05: *"it would be fun to try taking a test
+consisting entirely of text-based numbers after training in
+multi-model like testing in elementary school"*. Built
+`scripts/quiz_numbers.py` -- a structured 3-section quiz on digits
+1..4, mirroring a primary-school worksheet:
+
+- **Section A** -- *read the word*: ``show <digit>`` (label features only)
+- **Section B** -- *read the printed digit*: ``image_test`` on
+  idealised 4×4 printed forms (intentionally different stroke
+  geometry from MNIST mean-pool, so this is a real transfer test)
+- **Section C** -- *read the handwriting*: ``image_test`` on held-out
+  MNIST samples
+
+Scoring: closed-set 4-class argmax (multiple-choice quiz format).
+
+**First scorecard** (Pack V-cross dropout-trained brain):
+
+| Section | Score |
+| :------ | :---: |
+| A. read the word        | **100%**  |
+| B. read the printed digit |  25.0% |
+| C. read the handwriting |  18.8%   |
+| Overall (avg)            | 47.9%   |
+
+Reads exactly like a real first-grader's report: the symbolic pathway
+is rock-solid (the brain *recites* numbers from the word) but visual
+transfer is fragile, and the brain over-defaults to ``one`` -- the
+shape it has the cleanest engram for. Section B is the most diagnostic
+result: a true transfer test the brain has never been trained on, and
+it's at chance.
+
+This quiz is the new "is the brain learning generalisable concepts or
+memorising MNIST mean-pools?" benchmark.
+
 **Pack VR (next, sketch):** retina expansion 4×4 → 8×8 or 16×16, with
 V1 receptive fields tiled accordingly (more orientation/location
 columns), and a CIFAR-10 prep pipeline using the existing 4-class
@@ -1206,6 +1242,7 @@ warrant a focused investigation pack rather than feature work.
 | V | Pack V (MNIST + voice multimodal validation) | LANDED | — |
 | V | Pack V-tune (visual-only training mode)  | LANDED | — |
 | V | Pack V-cross (graded pixels + cross-modal dropout) | LANDED | — |
+| V | Pack V-quiz (elementary-school number test)      | LANDED | — |
 | V'| Pack VR (retina expansion + CIFAR + label-engram regularisation) | 3–5 | — |
 | T | Pack TREE MVP — branch data structure       | LANDED | — |
 | T' | Pack TREE behavioural (leaf-biased + directional sprout) | LANDED | — |
