@@ -306,7 +306,7 @@ over consecutive layer pairs and e-prop uses direct feedback alignment, so depth
 **BPTT** (LIF in torch ops, custom Heaviside/fast-sigmoid autograd Function,
 autograd unrolls the timestep loop). PyTorch owns data/optimizer/loss; SNC owns
 the structure + spiking model. See [`python/README.md`](../python/README.md).
-On MNIST, BPTT reaches ~0.977 (vs ~0.940 for e-prop), removes the depth
+On MNIST, BPTT reaches ~0.975 (vs ~0.940 for e-prop; 3 seeds), removes the depth
 penalty, and lets static-snc match dense at ~6× fewer synapses (Exp 4).
 
 Not yet (later phases of new-plan.md): event-based / audio datasets, and a
