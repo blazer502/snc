@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "snc/cuda_trainer.hpp"
 #include "snc/dataset.hpp"
 #include "snc/snn_graph.hpp"
 #include "snc/trainer.hpp"
@@ -27,8 +28,10 @@ struct Options {
   std::string encoder = "poisson";
   std::string structure = "static-snc";
   std::string train_mode = "all";   // all | readout
+  std::string device = "cpu";        // cpu | cuda
   std::string data_dir;
   std::string log_csv;
+  int batch = 64;                    // minibatch size (cuda device only)
   int num_steps = 30;
   int epochs = 20;
   int hidden = 200;
@@ -57,6 +60,7 @@ void usage() {
       "snc_train -- frozen-structure e-prop weight training\n"
       "  --dataset synthetic|mnist   --encoder direct|poisson|latency\n"
       "  --structure dense|random-sparse|static-snc   --train-mode all|readout\n"
+      "  --device cpu|cuda   --batch N (cuda minibatch)\n"
       "  --epochs N --num-steps N --hidden N --dim N --classes N\n"
       "  --num-train N --num-test N --synapse-budget S --delay D\n"
       "  --lr R --w-init W --w-max W --gamma G --decay D --threshold T\n"
@@ -87,7 +91,9 @@ Options parse(int argc, char** argv) {
     if (arg_str(i, argc, argv, "--encoder", o.encoder)) continue;
     if (arg_str(i, argc, argv, "--structure", o.structure)) continue;
     if (arg_str(i, argc, argv, "--train-mode", o.train_mode)) continue;
+    if (arg_str(i, argc, argv, "--device", o.device)) continue;
     if (arg_str(i, argc, argv, "--data-dir", o.data_dir)) continue;
+    if (arg_v(i, argc, argv, "--batch", o.batch)) continue;
     if (arg_str(i, argc, argv, "--log-csv", o.log_csv)) continue;
     if (arg_v(i, argc, argv, "--num-steps", o.num_steps)) continue;
     if (arg_v(i, argc, argv, "--epochs", o.epochs)) continue;
@@ -189,28 +195,39 @@ int main(int argc, char** argv) {
               train.size(), test.size(), train.classes, o.num_steps, o.lr,
               o.train_mode.c_str(), train.classes ? 1.0 / train.classes : 0.0);
 
-  Trainer trainer(g, cfg);
-  std::printf("\nepoch     loss  train_acc  test_acc      spikes        events\n");
+  const bool want_gpu = o.device == "cuda";
+  const bool use_gpu = want_gpu && cudatrain::available(cfg);
+  std::printf("device=%s%s\n", use_gpu ? "cuda" : "cpu",
+              want_gpu && !use_gpu ? " (cuda unavailable -> cpu fallback)" : "");
 
   std::ofstream csv;
   if (!o.log_csv.empty()) {
     csv.open(o.log_csv);
     csv << "epoch,loss,train_acc,test_acc,spikes,synaptic_events,energy\n";
   }
-
-  // Epoch 0: accuracy before any training (sanity = chance).
-  std::printf("%5d %8s %10.3f %9.3f %12s %13s\n", 0, "-",
-              trainer.evaluate(train), trainer.evaluate(test), "-", "-");
-
-  for (int e = 1; e <= o.epochs; ++e) {
-    EpochStats st = trainer.train_epoch(train, test, e);
+  auto log_epoch = [&](int e, const EpochStats& st) {
     std::printf("%5d %8.4f %10.3f %9.3f %12lld %13lld\n", e, st.loss,
                 st.train_acc, st.test_acc, st.spikes, st.synaptic_events);
-    if (csv) {
+    if (csv)
       csv << e << ',' << st.loss << ',' << st.train_acc << ',' << st.test_acc
-          << ',' << st.spikes << ',' << st.synaptic_events << ',' << st.energy
-          << '\n';
-    }
+          << ',' << st.spikes << ',' << st.synaptic_events << ',' << st.energy << '\n';
+  };
+  std::printf("\nepoch     loss  train_acc  test_acc      spikes        events\n");
+
+  if (use_gpu) {
+    CudaTrainSession* sess = cudatrain::create(g, cfg, o.batch);
+    std::printf("%5d %8s %10.3f %9.3f %12s %13s\n", 0, "-",
+                cudatrain::evaluate(sess, train), cudatrain::evaluate(sess, test),
+                "-", "-");
+    for (int e = 1; e <= o.epochs; ++e)
+      log_epoch(e, cudatrain::train_epoch(sess, train, test, e));
+    cudatrain::destroy(sess);
+  } else {
+    Trainer trainer(g, cfg);
+    std::printf("%5d %8s %10.3f %9.3f %12s %13s\n", 0, "-",
+                trainer.evaluate(train), trainer.evaluate(test), "-", "-");
+    for (int e = 1; e <= o.epochs; ++e)
+      log_epoch(e, trainer.train_epoch(train, test, e));
   }
   if (!o.log_csv.empty()) std::printf("wrote %s\n", o.log_csv.c_str());
   return 0;

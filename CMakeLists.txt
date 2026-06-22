@@ -59,9 +59,9 @@ set(SNC_SUBSTRATE_SRC
 )
 if(SNC_ENABLE_CUDA)
   enable_language(CUDA)
-  list(APPEND SNC_SUBSTRATE_SRC src/runtime/cuda_backend.cu)
+  list(APPEND SNC_SUBSTRATE_SRC src/runtime/cuda_backend.cu src/training/cuda_trainer.cu)
 else()
-  list(APPEND SNC_SUBSTRATE_SRC src/runtime/cuda_stub.cpp)
+  list(APPEND SNC_SUBSTRATE_SRC src/runtime/cuda_stub.cpp src/training/cuda_trainer_stub.cpp)
 endif()
 
 add_library(snc_substrate ${SNC_SUBSTRATE_SRC})
