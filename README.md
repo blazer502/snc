@@ -7,6 +7,38 @@ sleep-driven consolidation. The long-term goal is **pre-adolescent cortical
 capability**: minimal mathematical and communication skill grown from real
 human-like input/output rather than hand-engineered features.
 
+## New direction: a structure-aware SNN computing substrate
+
+SNC is being repositioned from "a brain simulator" to a **structure-aware
+spiking neural computing substrate**: it uses brain-inspired morphology and
+structural plasticity to *build sparse SNN graphs*, then executes them
+efficiently through event-driven parallel runtimes (CPU / OpenMP / CUDA). The
+brain-development model below becomes the slow *structural* layer; a new
+compiled-graph + runtime layer handles fast spike execution and evaluation on
+real workloads.
+
+- Plan: [`docs/new-plan.md`](docs/new-plan.md)
+- Architecture of the new substrate: [`docs/architecture.md`](docs/architecture.md)
+- Benchmark harness:
+
+  ```bash
+  cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+  cmake --build build --target snc_bench -j
+  ./build/snc_bench --self-test
+  ./build/snc_bench --structure static-snc --encoder poisson --backend cpu \
+                    --num-steps 50 --num-samples 64
+  # CUDA backend (nvcc + GPU): add -DSNC_ENABLE_CUDA=ON, then --compare-backends
+  ```
+
+The substrate separates a slow structural layer (`BrainGrid` / `Simulator`)
+from a fast spiking-graph layer (`SNNGraph`, a CSR adjacency) executed by
+pluggable backends. It currently compares dense / random-sparse / structure-aware
+sparse topologies under a shared synapse budget, three input encodings, and
+cpu/openmp/cuda backends (the CUDA atomic path is validated to match the CPU
+reference exactly). The original brain model is described below.
+
+---
+
 This README explains the two complementary models that the project rests on:
 
 1. **The computing model** — how a step is executed, how state is laid out in

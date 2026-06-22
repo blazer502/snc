@@ -42,3 +42,43 @@ target_link_libraries(snc_vocab PRIVATE snc_core)
 
 add_executable(snc_chat src/chat_demo.cpp)
 target_link_libraries(snc_chat PRIVATE snc_core)
+
+# ---------------------------------------------------------------------------
+# Structure-aware SNN substrate (new-plan.md): graph + encoders + runtimes +
+# benchmark. Kept as a separate library so the existing demos are untouched.
+# ---------------------------------------------------------------------------
+option(SNC_ENABLE_CUDA "Build the CUDA runtime backend (requires nvcc)" OFF)
+
+set(SNC_SUBSTRATE_SRC
+  src/graph/snn_graph.cpp
+  src/training/encoders.cpp
+  src/runtime/cpu_backend.cpp
+)
+if(SNC_ENABLE_CUDA)
+  enable_language(CUDA)
+  list(APPEND SNC_SUBSTRATE_SRC src/runtime/cuda_backend.cu)
+else()
+  list(APPEND SNC_SUBSTRATE_SRC src/runtime/cuda_stub.cpp)
+endif()
+
+add_library(snc_substrate ${SNC_SUBSTRATE_SRC})
+target_include_directories(snc_substrate PUBLIC include)
+# snc_core provides Simulator/Neuron for compile_from_simulator.
+target_link_libraries(snc_substrate PUBLIC snc_core)
+# Apply host warning/opt flags to C++ TUs only; nvcc has its own flag dialect.
+target_compile_options(snc_substrate PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-Wall>
+  $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
+  $<$<COMPILE_LANGUAGE:CXX>:-O3>
+  $<$<COMPILE_LANGUAGE:CXX>:-march=native>
+)
+if(OpenMP_CXX_FOUND)
+  target_link_libraries(snc_substrate PUBLIC OpenMP::OpenMP_CXX)
+endif()
+if(SNC_ENABLE_CUDA)
+  target_compile_definitions(snc_substrate PUBLIC SNC_HAVE_CUDA)
+  set_target_properties(snc_substrate PROPERTIES CUDA_ARCHITECTURES native)
+endif()
+
+add_executable(snc_bench src/bench/snc_bench.cpp)
+target_link_libraries(snc_bench PRIVATE snc_substrate snc_core)
