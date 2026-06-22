@@ -52,6 +52,8 @@ option(SNC_ENABLE_CUDA "Build the CUDA runtime backend (requires nvcc)" OFF)
 set(SNC_SUBSTRATE_SRC
   src/graph/snn_graph.cpp
   src/training/encoders.cpp
+  src/training/datasets.cpp
+  src/training/trainer.cpp
   src/runtime/cpu_backend.cpp
 )
 if(SNC_ENABLE_CUDA)
@@ -82,3 +84,6 @@ endif()
 
 add_executable(snc_bench src/bench/snc_bench.cpp)
 target_link_libraries(snc_bench PRIVATE snc_substrate snc_core)
+
+add_executable(snc_train src/training/train_main.cpp)
+target_link_libraries(snc_train PRIVATE snc_substrate snc_core)
