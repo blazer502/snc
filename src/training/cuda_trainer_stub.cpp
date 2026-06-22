@@ -16,6 +16,9 @@ EpochStats train_epoch(CudaTrainSession*, const Dataset&, const Dataset&, int) {
   return {};
 }
 double evaluate(CudaTrainSession*, const Dataset&) { return 0.0; }
+void reset_stats(CudaTrainSession*) {}
+void collect_stats(const CudaTrainSession*, std::vector<long long>& syn,
+                   std::vector<long long>& neur) { syn.clear(); neur.clear(); }
 
 }  // namespace cudatrain
 }  // namespace snc

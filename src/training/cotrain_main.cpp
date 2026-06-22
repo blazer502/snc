@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "snc/connectome.hpp"
+#include "snc/cuda_trainer.hpp"
 #include "snc/dataset.hpp"
 #include "snc/snn_graph.hpp"
 #include "snc/trainer.hpp"
@@ -31,7 +32,9 @@ using namespace snc;
 struct Options {
   std::string dataset = "synthetic";
   std::string encoder = "poisson";
+  std::string device = "cpu";   // cpu | cuda
   std::string data_dir, log_csv;
+  int batch = 64;               // minibatch size (cuda device only)
   int outer = 12;
   int inner = 2;
   int grow = 300;            // synapses pruned+regrown per structural round (0=static)
@@ -64,6 +67,7 @@ void usage() {
       "snc_cotrain -- two-timescale structure+weight co-training\n"
       "  --outer N --inner K --grow G(0=static) --structural-budget S\n"
       "  --dataset synthetic|mnist --encoder direct|poisson|latency\n"
+      "  --device cpu|cuda   --batch N (cuda minibatch)\n"
       "  --num-steps N --hidden N --dim N --classes N --num-train N --num-test N\n"
       "  --lr R --w-init W --w-grow W --gamma G --decay D --threshold T\n"
       "  --refractory R --noise S --gain G --locality F --protect R --feedback F\n"
@@ -91,8 +95,10 @@ Options parse(int argc, char** argv) {
     if (a == "-h" || a == "--help") { usage(); std::exit(0); }
     if (arg_str(i, argc, argv, "--dataset", o.dataset)) continue;
     if (arg_str(i, argc, argv, "--encoder", o.encoder)) continue;
+    if (arg_str(i, argc, argv, "--device", o.device)) continue;
     if (arg_str(i, argc, argv, "--data-dir", o.data_dir)) continue;
     if (arg_str(i, argc, argv, "--log-csv", o.log_csv)) continue;
+    if (arg_v(i, argc, argv, "--batch", o.batch)) continue;
     if (arg_v(i, argc, argv, "--outer", o.outer)) continue;
     if (arg_v(i, argc, argv, "--inner", o.inner)) continue;
     if (arg_v(i, argc, argv, "--grow", o.grow)) continue;
@@ -199,24 +205,49 @@ int main(int argc, char** argv) {
     csv << "round,synapses,pruned,grown,train_acc,test_acc,spikes\n";
   }
 
+  const bool want_gpu = o.device == "cuda";
+  const bool use_gpu = want_gpu && cudatrain::available(cfg);
+  std::printf("device=%s%s\n", use_gpu ? "cuda" : "cpu",
+              want_gpu && !use_gpu ? " (cuda unavailable -> cpu fallback)" : "");
+
   int global_epoch = 0;
   double best_test = 0.0;
+
+  // Train the inner loop on the current frozen graph (CPU or GPU), persist the
+  // learned weights back onto the connectome, and fill `as` with the activity
+  // stats the structural update consumes. Returns the last inner EpochStats.
+  auto run_round = [&](const SNNGraph& g, int r, ActivityStats& as) -> EpochStats {
+    EpochStats es;
+    if (use_gpu) {
+      CudaTrainSession* sess = cudatrain::create(g, cfg, o.batch);
+      if (r > 0) cudatrain::set_weights(sess, con.edge_weights());
+      cudatrain::reset_stats(sess);
+      for (int k = 0; k < o.inner; ++k)
+        es = cudatrain::train_epoch(sess, train, test, ++global_epoch);
+      con.set_edge_weights(cudatrain::get_weights(sess));
+      cudatrain::collect_stats(sess, as.syn_deliveries, as.neuron_fires);
+      cudatrain::destroy(sess);
+    } else {
+      Trainer tr(g, cfg);
+      if (r > 0) tr.set_weights(con.edge_weights());
+      tr.reset_stats();
+      for (int k = 0; k < o.inner; ++k)
+        es = tr.train_epoch(train, test, ++global_epoch);
+      con.set_edge_weights(tr.weights());
+      as.syn_deliveries = tr.syn_deliveries();
+      as.neuron_fires = tr.neuron_fires();
+    }
+    return es;
+  };
+
   for (int r = 0; r < o.outer; ++r) {
     SNNGraph g = con.to_graph();
-    Trainer tr(g, cfg);
-    if (r > 0) tr.set_weights(con.edge_weights());  // carry learned weights
-    tr.reset_stats();
-
-    EpochStats es;
-    for (int k = 0; k < o.inner; ++k) es = tr.train_epoch(train, test, ++global_epoch);
-    con.set_edge_weights(tr.weights());  // persist learned weights onto edges
+    ActivityStats as;
+    EpochStats es = run_round(g, r, as);
     best_test = std::max(best_test, es.test_acc);
 
     StructReport sr{0, 0, con.num_synapses()};
-    if (o.grow > 0 && r < o.outer - 1) {
-      ActivityStats as{tr.syn_deliveries(), tr.neuron_fires()};
-      sr = con.structural_update(as, scfg);
-    }
+    if (o.grow > 0 && r < o.outer - 1) sr = con.structural_update(as, scfg);
     std::printf("%5d %9d %8d %7d %10.3f %9.3f %12lld\n", r, con.num_synapses(),
                 sr.pruned, sr.grown, es.train_acc, es.test_acc, es.spikes);
     if (csv)
