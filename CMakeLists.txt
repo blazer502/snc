@@ -91,3 +91,6 @@ target_link_libraries(snc_train PRIVATE snc_substrate snc_core)
 
 add_executable(snc_cotrain src/training/cotrain_main.cpp)
 target_link_libraries(snc_cotrain PRIVATE snc_substrate snc_core)
+
+add_executable(snc_export src/bench/snc_export.cpp)
+target_link_libraries(snc_export PRIVATE snc_substrate snc_core)

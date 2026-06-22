@@ -98,13 +98,53 @@ Pushing depth to actually *help* would need a stronger credit-assignment rule
 (surrogate-gradient BPTT, Phase 5) and/or a budget that grows with depth — both
 orthogonal to the matched-budget structure comparison.
 
+## Experiment 4 — surrogate-gradient BPTT (PyTorch bridge, Phase 5)
+
+The C++ trainers use local learning (e-prop + direct feedback alignment). The
+PyTorch bridge (`python/`) instead trains the **exact same SNC topology** with
+true surrogate-gradient backprop-through-time: the LIF recurrence runs in torch
+ops over the exported edge list, the spike is a custom autograd Function
+(Heaviside forward, fast-sigmoid surrogate backward), and PyTorch unrolls the
+T-step loop. Full MNIST, Adam, 15 epochs, single seed (`python3 python/train.py`).
+
+Best test acc (max over epochs), single seed:
+
+| structure | synapses | 1 hidden | 2 hidden | 3 hidden |
+|---|---:|---|---|---|
+| dense (ref)   | 203,264 | 0.9776 | — | — |
+| static-snc    | 32,352 | **0.9767** | 0.9737 | 0.9707 |
+| random-sparse | 39,914 | 0.9689 | 0.9693 | 0.9651 |
+
+Four results, compared against the local-learning runs above:
+
+1. **BPTT ≫ e-prop.** At 1 hidden layer, surrogate-BPTT lifts static-snc 0.940 →
+   **0.977** and random-sparse 0.898 → **0.969** — the sparse SNC net reaches
+   ~97.7% on MNIST.
+2. **Structure-aware sparsity ≈ dense, at 6× fewer synapses.** static-snc (32k
+   syn) hits 0.9767 vs dense (203k syn) 0.9776 — within 0.1 pt at ~6× lower
+   synapse cost. The morphology prior is a near-free sparsification under BPTT.
+3. **Depth no longer hurts.** Under e-prop/DFA accuracy fell with depth
+   (static-snc 0.941 → 0.908, Exp 3); under BPTT it is nearly flat
+   (0.977 → 0.971). BPTT removes the depth penalty — though depth still does not
+   *help* on MNIST, which a one-hidden-layer net already solves at ~97.7%.
+4. **The structural advantage shrinks as the optimizer strengthens.** static-snc
+   beats random-sparse by ~+4 pts under e-prop but only ~+0.8 pts under BPTT: a
+   powerful learner partly compensates for a weaker topology. The morphology
+   prior matters most when learning is local/cheap — a genuinely interesting
+   interaction, not a pure win for either.
+
+(Single seed. The PyTorch path supports delay-1 graphs; see `python/README.md`.)
+
 ## Takeaways
 
 1. **Structure-aware sparsity > random sparsity** at equal (indeed lower) cost:
-   +4.2 pts on full MNIST, tight error bars — and the gap is **robust across
-   network depth** (~+4 pts at 1–3 hidden layers).
+   +4.2 pts on full MNIST under local learning, robust across depth (~+4 pts at
+   1–3 hidden layers). The gap narrows to ~+0.8 pts under surrogate-BPTT.
 2. **Dynamic structure > static** in the scarce-synapse regime: +13.0 pts at
    ~2k synapses; neutral when synapses are plentiful.
+3. **Learning rule matters more than depth here:** surrogate-BPTT reaches ~0.977
+   (vs ~0.940 for e-prop) and removes the depth penalty, but extra depth does not
+   help on MNIST — and static-snc nearly matches dense at ~6× fewer synapses.
 
 Both are *controlled, multi-seed, full-dataset* results, consistent with the
 earlier sub-sampled runs.
