@@ -250,8 +250,11 @@ all three seeds agree.
 | ~5200 (loose) | 0.708 | 0.716 |
 | ~2080 (tight) | 0.461 | **0.523** |
 
-This is a regime result on a sub-sampled task, not a final benchmark; the
-rigorous full-MNIST, multi-seed study is Phase-7 work.
+The **rigorous full-MNIST, multi-seed version** of both this and Experiment 1
+is in [`experiments-mnist.md`](experiments-mnist.md): with error bars over 3
+seeds on the full dataset, `static-snc` beats `random-sparse` by +4.0 pts at a
+matched budget, and dynamic co-training beats static by +10.9 pts at a very
+tight budget.
 
 ## Scope so far
 
@@ -261,6 +264,9 @@ bucket / sort, parity-checked), MNIST + synthetic datasets, the benchmark CLI,
 **frozen-structure e-prop training**, and **two-timescale structure+weight
 co-training** (grow/prune/rewire on the slow clock).
 
+Evaluated: the rigorous full-MNIST multi-seed study (Phase 7) — see
+[`experiments-mnist.md`](experiments-mnist.md).
+
 Not yet (later phases of new-plan.md): surrogate-gradient BPTT + PyTorch bridge
-(Phase 5), event-based / audio datasets, CUDA-accelerated training, and the
-rigorous full-MNIST multi-seed study (Phase 7).
+(Phase 5), event-based / audio datasets, CUDA-accelerated training, and deeper /
+multi-layer graphs.
