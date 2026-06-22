@@ -298,7 +298,8 @@ int main(int argc, char** argv) {
     std::printf("\nbackend           spikes      events     time(ms)  speedup  match\n");
     EvalResult ref;
     bool have_ref = false;
-    for (const char* bn : {"cpu", "openmp", "cuda-atomic"}) {
+    for (const char* bn :
+         {"cpu", "openmp", "cuda-atomic", "cuda-bucket", "cuda-sort"}) {
       Backend b;
       parse_backend(bn, b);
       EvalResult r = evaluate(g, d, o, enc, b);

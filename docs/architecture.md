@@ -76,13 +76,40 @@ Backends share this model:
   match cpu. *Note:* for small graphs the per-step fork/join + atomics make it
   slower than single-thread cpu; the parallel win is the CUDA path.
 - **cuda-atomic** — Stage 1 of new-plan.md §4.2: every fired neuron `atomicAdd`s
-  its weighted spikes into the device ring. Validated to match cpu spike/event
-  counts exactly. `cuda-bucket` / `cuda-sort` currently alias this kernel; the
-  target-sharded and segmented-reduction backends are the next PR.
+  its weighted spikes into the device ring.
+- **cuda-bucket** — Stage 2: delivery is sharded across `kShards` copies of the
+  ring by source neuron, so atomic contention on any one address drops ~`kShards`-
+  fold; the shards are reduced into the ring each step.
+- **cuda-sort** — Stage 3: fired neurons' synapses are expanded into
+  (ring-index key, signed value) events, sorted by key and segment-reduced
+  (Thrust `sort_by_key` + `reduce_by_key`), then scattered into the ring —
+  fully atomic-free.
 
-When a `cuda-*` backend is requested but unavailable (built without CUDA, or no
+All three are validated to produce **the same spike/event counts as cpu**. When
+a `cuda-*` backend is requested but unavailable (built without CUDA, or no
 device), `forward()` transparently falls back to cpu and reports the actual
 backend in `ForwardResult::used_backend`.
+
+### Backend throughput (RTX A6000, parity exact across all)
+
+The reduction strategies trade overhead for contention relief, so which wins
+depends on the regime:
+
+| regime | cpu | cuda-atomic | cuda-bucket | cuda-sort |
+|---|---|---|---|---|
+| moderate fan-in (static-snc, 120k syn) | 1.0× | **1.9×** | 1.6× | 0.3× |
+| heavy contention (dense, 1024→32, full drive) | 1.0× | 1.6× | **2.2×** | 0.3× |
+
+Bucketing wins when many sources hammer few high-fan-in targets (atomic
+contention dominates); at moderate contention the shard-reduction overhead makes
+plain atomic faster. Sort is contention-free but sort overhead dominates at
+these graph sizes — it is the strategy for extreme fan-in / very large event
+counts, not the default.
+
+**Locality (Exp. 5).** At an equal 120k-synapse budget, the morphology-
+constrained `static-snc` graph sustains ~7.0e8 synaptic-events/s vs ~6.6e8 for
+`random-sparse` (+6%) on cuda-atomic, and emits fewer events overall — a modest
+memory-locality benefit from spatially-clustered targets.
 
 ## Building
 
@@ -105,7 +132,7 @@ cmake --build build-cuda --target snc_bench -j
 ./build/snc_bench --structure static-snc --encoder poisson --backend cpu \
                   --num-steps 50 --num-samples 64
 
-# Parity + speedup across backends (cpu / openmp / cuda-atomic):
+# Parity + speedup across all five backends (cpu/openmp/cuda-atomic/bucket/sort):
 ./build-cuda/snc_bench --structure static-snc --num-steps 80 --num-samples 64 \
                        --synapse-budget 200000 --hidden 512 --compare-backends
 ```
@@ -229,10 +256,11 @@ rigorous full-MNIST, multi-seed study is Phase-7 work.
 ## Scope so far
 
 Implemented: graph abstraction + generators, structural→CSR compiler, three
-encoders, cpu/openmp runtimes, a verified Stage-1 CUDA atomic backend, the
-benchmark CLI, **frozen-structure e-prop training**, and **two-timescale
-structure+weight co-training** (grow/prune/rewire on the slow clock).
+encoders, cpu/openmp runtimes, **three CUDA delivery backends** (atomic /
+bucket / sort, parity-checked), MNIST + synthetic datasets, the benchmark CLI,
+**frozen-structure e-prop training**, and **two-timescale structure+weight
+co-training** (grow/prune/rewire on the slow clock).
 
 Not yet (later phases of new-plan.md): surrogate-gradient BPTT + PyTorch bridge
-(Phase 5), the CUDA bucket/sort reduction backends (Phase 4), event-based /
-audio datasets, and the rigorous multi-seed structure study (Phase 7).
+(Phase 5), event-based / audio datasets, CUDA-accelerated training, and the
+rigorous full-MNIST multi-seed study (Phase 7).
