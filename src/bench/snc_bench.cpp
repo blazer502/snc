@@ -21,6 +21,7 @@
 
 #include "neuron.hpp"
 #include "simulator.hpp"
+#include "snc/dataset.hpp"
 #include "snc/encoders.hpp"
 #include "snc/runtime.hpp"
 #include "snc/snn_graph.hpp"
@@ -115,80 +116,6 @@ Options parse(int argc, char** argv) {
     std::exit(2);
   }
   return o;
-}
-
-// ---- Datasets --------------------------------------------------------------
-
-struct Dataset {
-  int dim = 0;
-  int classes = 0;
-  std::vector<std::vector<float>> x;  // [num_samples][dim], values in [0,1]
-  std::vector<int> y;                 // [num_samples]
-};
-
-// Class-separable synthetic data: each class is a random prototype + noise.
-// Deterministic for a fixed seed. Lets the pipeline run with no external files.
-Dataset make_synthetic(int n, int dim, int classes, uint64_t seed) {
-  std::mt19937_64 rng(seed);
-  std::uniform_real_distribution<float> uni(0.0f, 1.0f);
-  std::normal_distribution<float> noise(0.0f, 0.15f);
-  std::vector<std::vector<float>> proto(classes, std::vector<float>(dim));
-  for (auto& p : proto)
-    for (float& v : p) v = uni(rng);
-  Dataset d;
-  d.dim = dim;
-  d.classes = classes;
-  for (int i = 0; i < n; ++i) {
-    const int c = i % classes;
-    std::vector<float> s(dim);
-    for (int k = 0; k < dim; ++k)
-      s[k] = std::clamp(proto[c][k] + noise(rng), 0.0f, 1.0f);
-    d.x.push_back(std::move(s));
-    d.y.push_back(c);
-  }
-  return d;
-}
-
-uint32_t read_be32(std::ifstream& f) {
-  unsigned char b[4];
-  f.read(reinterpret_cast<char*>(b), 4);
-  return (uint32_t(b[0]) << 24) | (uint32_t(b[1]) << 16) | (uint32_t(b[2]) << 8) |
-         uint32_t(b[3]);
-}
-
-// Minimal MNIST IDX loader. Expects train-images-idx3-ubyte +
-// train-labels-idx1-ubyte (uncompressed) under data_dir.
-Dataset load_mnist(const std::string& dir, int n) {
-  Dataset d;
-  std::ifstream img(dir + "/train-images-idx3-ubyte", std::ios::binary);
-  std::ifstream lab(dir + "/train-labels-idx1-ubyte", std::ios::binary);
-  if (!img || !lab) {
-    std::fprintf(stderr,
-                 "mnist: could not open IDX files under '%s'\n"
-                 "  expected train-images-idx3-ubyte + train-labels-idx1-ubyte\n",
-                 dir.c_str());
-    std::exit(1);
-  }
-  read_be32(img);  // magic
-  const int count = static_cast<int>(read_be32(img));
-  const int rows = static_cast<int>(read_be32(img));
-  const int cols = static_cast<int>(read_be32(img));
-  read_be32(lab);  // magic
-  read_be32(lab);  // label count
-  d.dim = rows * cols;
-  d.classes = 10;
-  const int take = std::min(n, count);
-  std::vector<unsigned char> buf(d.dim);
-  for (int i = 0; i < take; ++i) {
-    img.read(reinterpret_cast<char*>(buf.data()), d.dim);
-    unsigned char l = 0;
-    lab.read(reinterpret_cast<char*>(&l), 1);
-    std::vector<float> s(d.dim);
-    for (int k = 0; k < d.dim; ++k) s[k] = buf[k] / 255.0f;
-    d.x.push_back(std::move(s));
-    d.y.push_back(l);
-  }
-  return d;
 }
 
 // ---- Graph construction ----------------------------------------------------
@@ -355,7 +282,7 @@ int main(int argc, char** argv) {
 
   Dataset d = o.dataset == "mnist"
                   ? load_mnist(o.data_dir, o.num_samples)
-                  : make_synthetic(o.num_samples, o.dim, o.classes, o.seed);
+                  : make_synthetic(o.num_samples, o.dim, o.classes, 0.15f, o.seed);
 
   const std::vector<int> layers = {d.dim, o.hidden, d.classes};
   SNNGraph g = build_graph(o, layers);

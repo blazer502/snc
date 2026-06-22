@@ -35,7 +35,10 @@ backend.
 | `include/snc/runtime.hpp`, `src/runtime/cpu_backend.cpp` | `Backend` enum, LIF `forward()` over CSR, CPU + OpenMP |
 | `src/runtime/cuda_backend.cu` | Stage-1 atomic CUDA forward (built with `-DSNC_ENABLE_CUDA=ON`) |
 | `src/runtime/cuda_stub.cpp` | no-op `cuda::*` symbols for non-CUDA builds |
+| `include/snc/dataset.hpp`, `src/training/datasets.cpp` | `Dataset` + synthetic generator + MNIST IDX loader |
+| `include/snc/trainer.hpp`, `src/training/trainer.cpp` | frozen-structure **e-prop** weight training |
 | `src/bench/snc_bench.cpp` | `snc_bench` CLI: build graph, encode, run, report |
+| `src/training/train_main.cpp` | `snc_train` CLI: train frozen-topology weights, log per epoch |
 
 ## The compiled graph (CSR)
 
@@ -108,13 +111,56 @@ cmake --build build-cuda --target snc_bench -j
 See `snc_bench --help` for the full option list (datasets, encoders, backends,
 structures, LIF params, JSON/CSV logging).
 
-## Scope of this slice
+## Training (Track A): frozen structure, e-prop weights
+
+`snc_train` freezes a graph's topology and trains only its weights with
+**e-prop** (Bellec et al. 2020), a local, online approximation to BPTT. This
+isolates the value of the structural prior (new-plan.md §8.1).
+
+The trainer owns its own **signed** weight vector — topology and delays come
+from the frozen `SNNGraph`, but learning is decoupled from the graph's
+Dale-sign layout. Per sample, over the `num_steps` window:
+
+```
+eligibility  E_s   = sum_t  psi_post(s)[t] * tr_pre(s)[t]     # local, per synapse
+learn signal L_j   = output: softmax_j - onehot_j             # readout error
+                     hidden: sum_k B[j,k] * (softmax_k-onehot_k)   # random feedback
+update       w_s  -= (lr / T) * L_post(s) * E_s
+```
+
+`psi` is a triangular surrogate spike derivative and `tr` a low-passed
+pre-spike trace. Output spike counts are the class logits (softmax +
+cross-entropy). Hidden credit assignment uses a fixed random feedback matrix
+`B` (broadcast alignment), so there is **no global backprop**.
+
+Stability note: weights must start near threshold (`--w-init` small) so the
+surrogate is non-zero — too-strong init saturates every neuron, ψ collapses to
+0, and nothing learns. The shipped default keeps the network in regime.
+
+```bash
+cmake --build build --target snc_train -j
+
+# Train a frozen structure-aware sparse graph on the synthetic task:
+./build/snc_train --structure static-snc --epochs 12
+
+# Does hidden-layer e-prop actually help vs a trained readout only?
+./build/snc_train --train-mode readout   # stalls near chance
+./build/snc_train --train-mode all       # learns (default)
+```
+
+Verified: on the separable synthetic task (10 classes, chance 0.10) full e-prop
+goes 0.10 → ~1.0 test accuracy in a few epochs with a clean loss curve; a
+trained-readout-only baseline stays near chance, showing the local hidden
+learning carries the task. Runs are deterministic for a fixed seed; static-snc
+reaches the same accuracy at ~half the synaptic events of the dense baseline.
+
+## Scope so far
 
 Implemented: graph abstraction + generators, structural→CSR compiler, three
-encoders, cpu/openmp runtimes, a verified Stage-1 CUDA atomic backend, and the
-benchmark CLI.
+encoders, cpu/openmp runtimes, a verified Stage-1 CUDA atomic backend, the
+benchmark CLI, and **frozen-structure e-prop training** with per-epoch logging.
 
-Not yet (later phases of new-plan.md): supervised surrogate-gradient training
-and the PyTorch bridge (Phase 5), structural epochs driven by activity
-(Phase 6), the CUDA bucket/sort reduction backends (Phase 4), and event-based /
-audio datasets (Phase 7).
+Not yet (later phases of new-plan.md): two-timescale structure+weight
+co-training and structural epochs (Phase 6), surrogate-gradient BPTT + PyTorch
+bridge (Phase 5), the CUDA bucket/sort reduction backends (Phase 4), and
+event-based / audio datasets (Phase 7).
