@@ -72,10 +72,37 @@ precisely when synapses are scarce and must be allocated well; once the budget
 is comfortable, a fixed local topology already suffices and rewiring churn adds
 nothing.
 
+## Experiment 3 — depth: does it help, is the structural gap robust?
+
+Frozen structure, e-prop with direct feedback alignment (every hidden neuron
+gets its own random feedback row from the output error, so the rule works for
+any number of hidden layers). Hidden width 256 per layer; the **synapse budget
+is fixed at 40k across all depths**, so deeper = budget spread thinner.
+Reproduce: `./scripts/run_depth_sweep.sh && python3 scripts/aggregate_depth.py`.
+
+| hidden layers | static-snc | random-sparse | gap |
+|---|---|---|---:|
+| 1 (256)             | 0.9409 ± 0.0017 | 0.8980 ± 0.0031 | **+0.043** |
+| 2 (256,256)         | 0.9257 ± 0.0012 | 0.8868 ± 0.0053 | **+0.039** |
+| 3 (256,256,256)     | 0.9079 ± 0.0011 | 0.8673 ± 0.0008 | **+0.041** |
+
+**Result.** Two things. (1) **Depth does not help in this regime** — accuracy
+declines with depth for both topologies (static-snc 0.941 → 0.926 → 0.908). That
+is expected: at a fixed budget each added layer thins the per-layer fan-out, and
+direct feedback alignment is known to degrade with depth. (2) **The structure-
+aware advantage is robust to depth** — static-snc beats random-sparse by ~+4
+points at *every* depth, with non-overlapping error bars across 3 seeds. The
+morphology-constrained prior helps regardless of how deep the graph is.
+
+Pushing depth to actually *help* would need a stronger credit-assignment rule
+(surrogate-gradient BPTT, Phase 5) and/or a budget that grows with depth — both
+orthogonal to the matched-budget structure comparison.
+
 ## Takeaways
 
 1. **Structure-aware sparsity > random sparsity** at equal (indeed lower) cost:
-   +4.2 pts on full MNIST, tight error bars.
+   +4.2 pts on full MNIST, tight error bars — and the gap is **robust across
+   network depth** (~+4 pts at 1–3 hidden layers).
 2. **Dynamic structure > static** in the scarce-synapse regime: +13.0 pts at
    ~2k synapses; neutral when synapses are plentiful.
 
@@ -84,8 +111,10 @@ earlier sub-sampled runs.
 
 ## Limitations / next
 
-Single hidden layer, rate coding, 12 epochs, one hyper-parameter setting per
-config (no per-config tuning). Training now runs on the GPU (minibatch e-prop),
-so epochs/depth are no longer the bottleneck. Natural extensions: deeper /
-multi-layer graphs, latency and event-based encodings, and longer schedules.
-These do not change the matched-budget comparisons above.
+Rate coding, 12 epochs, one hyper-parameter setting per config (no per-config
+tuning), and local learning (e-prop + direct feedback alignment) — which is why
+depth does not yet pay off (Exp 3). Training runs on the GPU (minibatch e-prop),
+so epochs/depth are not the bottleneck. Natural extensions: surrogate-gradient
+BPTT (to make depth productive), latency and event-based encodings, and a
+depth-scaled synapse budget. These do not change the matched-budget comparisons
+above.
