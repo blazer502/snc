@@ -297,5 +297,9 @@ slow clock).
 Evaluated: the rigorous full-MNIST multi-seed study (Phase 7) — see
 [`experiments-mnist.md`](experiments-mnist.md).
 
+Multi-layer graphs are supported (`--hidden W1,W2,...`): all generators loop
+over consecutive layer pairs and e-prop uses direct feedback alignment, so depth
+"just works" — see the depth sweep in [`experiments-mnist.md`](experiments-mnist.md).
+
 Not yet (later phases of new-plan.md): surrogate-gradient BPTT + PyTorch bridge
-(Phase 5), event-based / audio datasets, and deeper / multi-layer graphs.
+(Phase 5; the lever for making depth productive), and event-based / audio datasets.

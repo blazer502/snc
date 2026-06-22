@@ -34,7 +34,7 @@ struct Options {
   int batch = 64;                    // minibatch size (cuda device only)
   int num_steps = 30;
   int epochs = 20;
-  int hidden = 200;
+  std::string hidden = "256";        // hidden layer width(s), e.g. "256" or "256,256"
   int dim = 200;
   int classes = 10;
   int num_train = 300;
@@ -61,7 +61,7 @@ void usage() {
       "  --dataset synthetic|mnist   --encoder direct|poisson|latency\n"
       "  --structure dense|random-sparse|static-snc   --train-mode all|readout\n"
       "  --device cpu|cuda   --batch N (cuda minibatch)\n"
-      "  --epochs N --num-steps N --hidden N --dim N --classes N\n"
+      "  --epochs N --num-steps N --hidden W|W1,W2,.. --dim N --classes N\n"
       "  --num-train N --num-test N --synapse-budget S --delay D\n"
       "  --lr R --w-init W --w-max W --gamma G --decay D --threshold T\n"
       "  --refractory R --noise S --gain G --inhib F --feedback F --seed S\n"
@@ -97,7 +97,7 @@ Options parse(int argc, char** argv) {
     if (arg_str(i, argc, argv, "--log-csv", o.log_csv)) continue;
     if (arg_v(i, argc, argv, "--num-steps", o.num_steps)) continue;
     if (arg_v(i, argc, argv, "--epochs", o.epochs)) continue;
-    if (arg_v(i, argc, argv, "--hidden", o.hidden)) continue;
+    if (arg_str(i, argc, argv, "--hidden", o.hidden)) continue;
     if (arg_v(i, argc, argv, "--dim", o.dim)) continue;
     if (arg_v(i, argc, argv, "--classes", o.classes)) continue;
     if (arg_v(i, argc, argv, "--num-train", o.num_train)) continue;
@@ -121,6 +121,20 @@ Options parse(int argc, char** argv) {
     std::exit(2);
   }
   return o;
+}
+
+// {dim} + comma-separated hidden widths + {classes}. "256,256" -> 2 hidden layers.
+std::vector<int> build_layers(int dim, const std::string& spec, int classes) {
+  std::vector<int> L{dim};
+  for (std::size_t i = 0; i < spec.size();) {
+    std::size_t j = spec.find(',', i);
+    if (j == std::string::npos) j = spec.size();
+    std::string tok = spec.substr(i, j - i);
+    if (!tok.empty()) L.push_back(std::stoi(tok));
+    i = j + 1;
+  }
+  L.push_back(classes);
+  return L;
 }
 
 SNNGraph build_graph(const Options& o, const std::vector<int>& layers) {
@@ -169,7 +183,7 @@ int main(int argc, char** argv) {
     split(all, o.num_train, o.num_test, train, test);
   }
 
-  const std::vector<int> layers = {train.dim, o.hidden, train.classes};
+  const std::vector<int> layers = build_layers(train.dim, o.hidden, train.classes);
   SNNGraph g = build_graph(o, layers);
   std::string err;
   if (!g.validate(err)) { std::fprintf(stderr, "graph invalid: %s\n", err.c_str()); return 1; }

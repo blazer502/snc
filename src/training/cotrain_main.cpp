@@ -39,7 +39,7 @@ struct Options {
   int inner = 2;
   int grow = 300;            // synapses pruned+regrown per structural round (0=static)
   int num_steps = 25;
-  int hidden = 200;
+  std::string hidden = "200";   // hidden layer width(s), e.g. "200" or "200,200"
   int dim = 200;
   int classes = 10;
   int num_train = 300;
@@ -68,7 +68,7 @@ void usage() {
       "  --outer N --inner K --grow G(0=static) --structural-budget S\n"
       "  --dataset synthetic|mnist --encoder direct|poisson|latency\n"
       "  --device cpu|cuda   --batch N (cuda minibatch)\n"
-      "  --num-steps N --hidden N --dim N --classes N --num-train N --num-test N\n"
+      "  --num-steps N --hidden W|W1,W2,.. --dim N --classes N --num-train N --num-test N\n"
       "  --lr R --w-init W --w-grow W --gamma G --decay D --threshold T\n"
       "  --refractory R --noise S --gain G --locality F --protect R --feedback F\n"
       "  --seed S --data-dir DIR --log-csv FILE\n");
@@ -103,7 +103,7 @@ Options parse(int argc, char** argv) {
     if (arg_v(i, argc, argv, "--inner", o.inner)) continue;
     if (arg_v(i, argc, argv, "--grow", o.grow)) continue;
     if (arg_v(i, argc, argv, "--num-steps", o.num_steps)) continue;
-    if (arg_v(i, argc, argv, "--hidden", o.hidden)) continue;
+    if (arg_str(i, argc, argv, "--hidden", o.hidden)) continue;
     if (arg_v(i, argc, argv, "--dim", o.dim)) continue;
     if (arg_v(i, argc, argv, "--classes", o.classes)) continue;
     if (arg_v(i, argc, argv, "--num-train", o.num_train)) continue;
@@ -128,6 +128,27 @@ Options parse(int argc, char** argv) {
     std::exit(2);
   }
   return o;
+}
+
+// {dim} + comma-separated hidden widths + {classes}. "200,200" -> 2 hidden layers.
+std::vector<int> build_layers(int dim, const std::string& spec, int classes) {
+  std::vector<int> L{dim};
+  for (std::size_t i = 0; i < spec.size();) {
+    std::size_t j = spec.find(',', i);
+    if (j == std::string::npos) j = spec.size();
+    std::string tok = spec.substr(i, j - i);
+    if (!tok.empty()) L.push_back(std::stoi(tok));
+    i = j + 1;
+  }
+  L.push_back(classes);
+  return L;
+}
+
+std::string layers_str(const std::vector<int>& L) {
+  std::string s = "[";
+  for (std::size_t i = 0; i < L.size(); ++i)
+    s += std::to_string(L[i]) + (i + 1 < L.size() ? "," : "");
+  return s + "]";
 }
 
 void split(const Dataset& all, int n_train, int n_test, Dataset& tr, Dataset& te) {
@@ -163,9 +184,9 @@ int main(int argc, char** argv) {
   }
   const int dim = train.dim, classes = train.classes;
 
-  Connectome con = Connectome::layered_local({dim, o.hidden, classes},
-                                             o.synapse_budget, o.delay, o.w_init,
-                                             o.seed);
+  const std::vector<int> layers = build_layers(dim, o.hidden, classes);
+  Connectome con = Connectome::layered_local(layers, o.synapse_budget, o.delay,
+                                             o.w_init, o.seed);
 
   TrainConfig cfg;
   cfg.num_steps = o.num_steps;
@@ -191,8 +212,8 @@ int main(int argc, char** argv) {
   scfg.seed = o.seed;
 
   const char* mode = o.grow > 0 ? "dynamic" : "static";
-  std::printf("mode=%s  dataset=%s  layers=[%d,%d,%d]  budget=%d  synapses=%d\n", mode,
-              o.dataset.c_str(), dim, o.hidden, classes, o.synapse_budget,
+  std::printf("mode=%s  dataset=%s  layers=%s  budget=%d  synapses=%d\n", mode,
+              o.dataset.c_str(), layers_str(layers).c_str(), o.synapse_budget,
               con.num_synapses());
   std::printf("train=%d test=%d classes=%d  outer=%d inner=%d grow=%d  chance=%.3f\n",
               train.size(), test.size(), classes, o.outer, o.inner, o.grow,
