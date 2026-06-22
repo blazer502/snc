@@ -227,10 +227,17 @@ index, the locality window is a contiguous index range, so growth is cheap and
 exact. `--grow 0` freezes structure (static baseline) so dynamic vs static can
 be compared at an equal synapse budget and equal epoch count.
 
+Both timescales can run on the GPU: `--device cuda --batch N` trains each inner
+loop with the batched GPU e-prop trainer (which also returns the per-synapse /
+per-neuron activity the structural update consumes), falling back to the CPU
+trainer when CUDA is unavailable.
+
 ```bash
 cmake --build build --target snc_cotrain -j
 ./snc_cotrain --outer 16 --inner 2 --grow 80  --structural-budget 800   # dynamic
 ./snc_cotrain --outer 16 --inner 2 --grow 0   --structural-budget 800   # static
+./snc_cotrain --dataset mnist --data-dir data/mnist --device cuda --batch 32 \
+              --outer 12 --inner 1 --grow 200 --structural-budget 3000     # GPU
 ```
 
 **Finding (synthetic, 10 classes, noise 0.5, 3 seeds).** Rewiring helps most

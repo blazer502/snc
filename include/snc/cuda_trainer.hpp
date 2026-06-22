@@ -46,5 +46,13 @@ EpochStats train_epoch(CudaTrainSession*, const Dataset& train,
 // Argmax accuracy over a dataset using current weights (no learning).
 double evaluate(CudaTrainSession*, const Dataset& test);
 
+// Activity statistics for the structural update (two-timescale co-training).
+// Accumulated over training batches only (not evaluation); call reset_stats()
+// before the inner loop and collect_stats() after. Indexed by current-graph
+// synapse / neuron id.
+void reset_stats(CudaTrainSession*);
+void collect_stats(const CudaTrainSession*, std::vector<long long>& syn_deliveries,
+                   std::vector<long long>& neuron_fires);
+
 }  // namespace cudatrain
 }  // namespace snc

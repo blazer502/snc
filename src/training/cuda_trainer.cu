@@ -32,6 +32,8 @@ struct CudaTrainSession {
   unsigned char* d_fired = nullptr;
   curandState* d_rng = nullptr;
   unsigned long long *d_spikes = nullptr, *d_syn = nullptr;
+  // Per-synapse delivery / per-neuron firing counts for the structural update.
+  unsigned long long *d_syn_deliv = nullptr, *d_neur_fire = nullptr;
 };
 
 namespace {
@@ -68,7 +70,8 @@ __global__ void k_integrate_fire(int t, int n, int bs, int ring_len, float thr,
                                  const int* channel, int oc, float* v,
                                  float* ext, float* tr, float* psi, int* refr,
                                  unsigned char* fired, float* ring,
-                                 float* counts, unsigned long long* spikes) {
+                                 float* counts, unsigned long long* spikes,
+                                 unsigned long long* neur_fire) {
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
   if (tid >= bs * n) return;
   const int b = tid / n, j = tid % n;
@@ -93,6 +96,7 @@ __global__ void k_integrate_fire(int t, int n, int bs, int ring_len, float thr,
   fired[tid] = f ? 1 : 0;
   if (f) {
     atomicAdd(spikes, 1ULL);
+    if (neur_fire) atomicAdd(&neur_fire[j], 1ULL);
     if (role[j] == 2 && channel[j] >= 0 && channel[j] < oc)
       atomicAdd(&counts[b * oc + channel[j]], 1.0f);
   }
@@ -110,15 +114,17 @@ __global__ void k_eligibility(int n, int S, int bs, const int* post,
 __global__ void k_deliver(int t, int n, int bs, int ring_len, const int* row,
                          const int* post, const int* delays, const float* w,
                          const unsigned char* fired, float* ring,
-                         unsigned long long* syn) {
+                         unsigned long long* syn, unsigned long long* syn_deliv) {
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
   if (tid >= bs * n) return;
   const int b = tid / n, i = tid % n;
   if (!fired[tid]) return;
   const int rn = ring_len * n;
   const int beg = row[i], fin = row[i + 1];
-  for (int e = beg; e < fin; ++e)
+  for (int e = beg; e < fin; ++e) {
     atomicAdd(&ring[b * rn + ((t + delays[e]) % ring_len) * n + post[e]], w[e]);
+    if (syn_deliv) atomicAdd(&syn_deliv[e], 1ULL);
+  }
   if (fin > beg) atomicAdd(syn, (unsigned long long)(fin - beg));
 }
 
@@ -255,7 +261,11 @@ CudaTrainSession* create(const SNNGraph& g, const TrainConfig& cfg, int batch) {
   am((void**)&s->d_rng, (size_t)B * s->dim * sizeof(curandState));
   am((void**)&s->d_spikes, sizeof(unsigned long long));
   am((void**)&s->d_syn, sizeof(unsigned long long));
+  am((void**)&s->d_syn_deliv, (size_t)SS * sizeof(unsigned long long));
+  am((void**)&s->d_neur_fire, (size_t)N * sizeof(unsigned long long));
   if (!ok) { destroy(s); return nullptr; }
+  cudaMemset(s->d_syn_deliv, 0, (size_t)SS * sizeof(unsigned long long));
+  cudaMemset(s->d_neur_fire, 0, (size_t)N * sizeof(unsigned long long));
 
   k_rng_init<<<grid(B * s->dim), kBlock>>>(B * s->dim, cfg.seed, s->d_rng);
   if (cudaDeviceSynchronize() != cudaSuccess) { destroy(s); return nullptr; }
@@ -271,7 +281,8 @@ void destroy(CudaTrainSession* s) {
                   (void*)s->d_ring, (void*)s->d_E, (void*)s->d_counts,
                   (void*)s->d_X, (void*)s->d_delta, (void*)s->d_L,
                   (void*)s->d_refr, (void*)s->d_y, (void*)s->d_fired,
-                  (void*)s->d_rng, (void*)s->d_spikes, (void*)s->d_syn})
+                  (void*)s->d_rng, (void*)s->d_spikes, (void*)s->d_syn,
+                  (void*)s->d_syn_deliv, (void*)s->d_neur_fire})
     cudaFree(p);
   delete s;
 }
@@ -307,10 +318,12 @@ void run_batch(CudaTrainSession* s, int bs, bool train, std::vector<float>& coun
     else
       k_inject_direct<<<grid(bs * s->dim), kBlock>>>(N, s->dim, bs, s->gain, s->d_X, s->d_ext);
 
+    unsigned long long* nf = train ? s->d_neur_fire : nullptr;
+    unsigned long long* sd = train ? s->d_syn_deliv : nullptr;
     k_integrate_fire<<<grid(bs * N), kBlock>>>(
         t, N, bs, s->ring_len, s->thr, s->decay, s->reset, s->refr_steps, s->gamma,
         s->d_role, s->d_channel, s->oc, s->d_v, s->d_ext, s->d_tr, s->d_psi,
-        s->d_refr, s->d_fired, s->d_ring, s->d_counts, s->d_spikes);
+        s->d_refr, s->d_fired, s->d_ring, s->d_counts, s->d_spikes, nf);
 
     if (train)
       k_eligibility<<<grid(bs * SS), kBlock>>>(N, SS, bs, s->d_post, s->d_src,
@@ -318,7 +331,7 @@ void run_batch(CudaTrainSession* s, int bs, bool train, std::vector<float>& coun
 
     k_deliver<<<grid(bs * N), kBlock>>>(t, N, bs, s->ring_len, s->d_row, s->d_post,
                                         s->d_delays, s->d_w, s->d_fired, s->d_ring,
-                                        s->d_syn);
+                                        s->d_syn, sd);
   }
 
   if (train) {
@@ -419,6 +432,26 @@ EpochStats train_epoch(CudaTrainSession* s, const Dataset& train,
   st.synaptic_events = static_cast<long long>(syn);
   st.energy = 1.0 * st.spikes + 0.2 * st.synaptic_events;
   return st;
+}
+
+void reset_stats(CudaTrainSession* s) {
+  if (!s) return;
+  cudaMemset(s->d_syn_deliv, 0, (size_t)s->S * sizeof(unsigned long long));
+  cudaMemset(s->d_neur_fire, 0, (size_t)s->n * sizeof(unsigned long long));
+}
+
+void collect_stats(const CudaTrainSession* s, std::vector<long long>& syn,
+                   std::vector<long long>& neur) {
+  syn.assign(s ? s->S : 0, 0);
+  neur.assign(s ? s->n : 0, 0);
+  if (!s) return;
+  std::vector<unsigned long long> a(s->S), b(s->n);
+  cudaMemcpy(a.data(), s->d_syn_deliv, (size_t)s->S * sizeof(unsigned long long),
+             cudaMemcpyDeviceToHost);
+  cudaMemcpy(b.data(), s->d_neur_fire, (size_t)s->n * sizeof(unsigned long long),
+             cudaMemcpyDeviceToHost);
+  for (int i = 0; i < s->S; ++i) syn[i] = static_cast<long long>(a[i]);
+  for (int i = 0; i < s->n; ++i) neur[i] = static_cast<long long>(b[i]);
 }
 
 }  // namespace cudatrain
