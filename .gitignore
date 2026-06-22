@@ -1,4 +1,5 @@
 build/
+build-cuda/
 *.snc
 *.snc.meta
 dev_curve.csv
