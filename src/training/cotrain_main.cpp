@@ -146,14 +146,18 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  const int need = o.num_train + o.num_test;
-  Dataset all = o.dataset == "mnist"
-                    ? load_mnist(o.data_dir, need)
-                    : make_synthetic(need, o.dim, o.classes, o.noise, o.seed);
   Dataset train, test;
-  split(all, o.num_train, o.num_test, train, test);
+  if (o.dataset == "mnist") {
+    train = load_mnist(o.data_dir, o.num_train, /*test_split=*/false);
+    test = load_mnist(o.data_dir, o.num_test, /*test_split=*/true);
+  } else {
+    Dataset all = make_synthetic(o.num_train + o.num_test, o.dim, o.classes,
+                                 o.noise, o.seed);
+    split(all, o.num_train, o.num_test, train, test);
+  }
+  const int dim = train.dim, classes = train.classes;
 
-  Connectome con = Connectome::layered_local({all.dim, o.hidden, all.classes},
+  Connectome con = Connectome::layered_local({dim, o.hidden, classes},
                                              o.synapse_budget, o.delay, o.w_init,
                                              o.seed);
 
@@ -181,11 +185,12 @@ int main(int argc, char** argv) {
   scfg.seed = o.seed;
 
   const char* mode = o.grow > 0 ? "dynamic" : "static";
-  std::printf("mode=%s  layers=[%d,%d,%d]  budget=%d  synapses=%d\n", mode,
-              all.dim, o.hidden, all.classes, o.synapse_budget, con.num_synapses());
+  std::printf("mode=%s  dataset=%s  layers=[%d,%d,%d]  budget=%d  synapses=%d\n", mode,
+              o.dataset.c_str(), dim, o.hidden, classes, o.synapse_budget,
+              con.num_synapses());
   std::printf("train=%d test=%d classes=%d  outer=%d inner=%d grow=%d  chance=%.3f\n",
-              train.size(), test.size(), all.classes, o.outer, o.inner, o.grow,
-              all.classes ? 1.0 / all.classes : 0.0);
+              train.size(), test.size(), classes, o.outer, o.inner, o.grow,
+              classes ? 1.0 / classes : 0.0);
   std::printf("\nround  synapses   pruned   grown  train_acc  test_acc       spikes\n");
 
   std::ofstream csv;
