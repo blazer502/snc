@@ -60,11 +60,23 @@ class Trainer {
   // Argmax-accuracy over a dataset using current weights (no learning).
   double evaluate(const Dataset& d) const;
 
+  // Weight carry-over across structural epochs (two-timescale co-training).
+  const std::vector<float>& weights() const { return w_; }
+  void set_weights(const std::vector<float>& w);  // size must == num_synapses
+
+  // Activity statistics consumed by the structural update. Accumulated during
+  // train_epoch (not evaluate); indexed by current-graph synapse / neuron id.
+  const std::vector<long long>& syn_deliveries() const { return syn_deliv_; }
+  const std::vector<long long>& neuron_fires() const { return neur_fire_; }
+  void reset_stats();
+
  private:
   const SNNGraph& g_;
   TrainConfig cfg_;
 
   std::vector<float> w_;               // signed weight per synapse
+  std::vector<long long> syn_deliv_;   // per-synapse spike deliveries (training)
+  std::vector<long long> neur_fire_;   // per-neuron firings (training)
   std::vector<float> B_;               // [num_internal * classes] random feedback
   std::vector<int> internal_idx_;      // internal neuron id -> row in B_ (or -1)
   int classes_ = 0;
@@ -77,7 +89,9 @@ class Trainer {
   // per-neuron surrogate-weighted activity needed for the weight update.
   void run_sample(const std::vector<float>& x, uint64_t sample_seed,
                   std::vector<float>& counts, std::vector<double>* elig,
-                  long long& spikes, long long& events) const;
+                  long long& spikes, long long& events,
+                  std::vector<long long>* syn_deliv,
+                  std::vector<long long>* neur_fire) const;
 
   void apply_update(const std::vector<double>& elig,
                     const std::vector<float>& counts, int label);

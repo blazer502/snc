@@ -16,6 +16,8 @@ Trainer::Trainer(const SNNGraph& graph, const TrainConfig& cfg)
   std::uniform_real_distribution<float> wu(0.0f, cfg_.w_init);
   w_.resize(g_.num_synapses());
   for (float& w : w_) w = wu(rng);
+  syn_deliv_.assign(g_.num_synapses(), 0);
+  neur_fire_.assign(g_.num_neurons, 0);
 
   // Channel -> input neuron ids (resolved once).
   chan_to_neurons_.assign(g_.num_input_channels, {});
@@ -35,9 +37,20 @@ Trainer::Trainer(const SNNGraph& graph, const TrainConfig& cfg)
   for (float& b : B_) b = bn(rng);
 }
 
+void Trainer::set_weights(const std::vector<float>& w) {
+  if (w.size() == w_.size()) w_ = w;
+}
+
+void Trainer::reset_stats() {
+  std::fill(syn_deliv_.begin(), syn_deliv_.end(), 0);
+  std::fill(neur_fire_.begin(), neur_fire_.end(), 0);
+}
+
 void Trainer::run_sample(const std::vector<float>& x, uint64_t sample_seed,
                          std::vector<float>& counts, std::vector<double>* elig,
-                         long long& spikes, long long& events) const {
+                         long long& spikes, long long& events,
+                         std::vector<long long>* syn_deliv,
+                         std::vector<long long>* neur_fire) const {
   const int n = g_.num_neurons;
   const auto& rp = g_.row_ptr;
   const auto& post = g_.post_ids;
@@ -102,6 +115,7 @@ void Trainer::run_sample(const std::vector<float>& x, uint64_t sample_seed,
       psi[j] = d < 1.0f ? gamma * (1.0f - d) : 0.0f;
       if (fired[j]) {
         ++spikes;
+        if (neur_fire) ++(*neur_fire)[j];
         if (g_.role[j] == GraphRole::OUTPUT && g_.channel[j] >= 0)
           counts[g_.channel[j]] += 1.0f;
       }
@@ -128,6 +142,7 @@ void Trainer::run_sample(const std::vector<float>& x, uint64_t sample_seed,
         const int dt = (t + del[e]) % ring_len;
         ring[static_cast<std::size_t>(dt) * n + post[e]] += w_[e];
         ++events;
+        if (syn_deliv) ++(*syn_deliv)[e];
       }
     }
   }
@@ -190,7 +205,7 @@ EpochStats Trainer::train_epoch(const Dataset& train, const Dataset& test,
     const uint64_t sseed = cfg_.seed ^ (0xD1B54A32D192ED03ULL * (idx + 1)) ^
                            (static_cast<uint64_t>(epoch) << 32);
     run_sample(train.x[idx], sseed, counts, &elig, st.spikes,
-               st.synaptic_events);
+               st.synaptic_events, &syn_deliv_, &neur_fire_);
 
     // Loss + prediction for reporting.
     float mx = *std::max_element(counts.begin(), counts.end());
@@ -220,7 +235,7 @@ double Trainer::evaluate(const Dataset& d) const {
   for (int i = 0; i < d.size(); ++i) {
     // Fixed seed per sample so evaluation is deterministic across epochs.
     const uint64_t sseed = cfg_.seed ^ (0xD1B54A32D192ED03ULL * (i + 1));
-    run_sample(d.x[i], sseed, counts, nullptr, spikes, events);
+    run_sample(d.x[i], sseed, counts, nullptr, spikes, events, nullptr, nullptr);
     int pred = 0;
     for (int k = 1; k < classes_; ++k)
       if (counts[k] > counts[pred]) pred = k;

@@ -37,8 +37,10 @@ backend.
 | `src/runtime/cuda_stub.cpp` | no-op `cuda::*` symbols for non-CUDA builds |
 | `include/snc/dataset.hpp`, `src/training/datasets.cpp` | `Dataset` + synthetic generator + MNIST IDX loader |
 | `include/snc/trainer.hpp`, `src/training/trainer.cpp` | frozen-structure **e-prop** weight training |
+| `include/snc/connectome.hpp`, `src/structure/connectome.cpp` | mutable position-aware connectome + grow/prune/rewire |
 | `src/bench/snc_bench.cpp` | `snc_bench` CLI: build graph, encode, run, report |
 | `src/training/train_main.cpp` | `snc_train` CLI: train frozen-topology weights, log per epoch |
+| `src/training/cotrain_main.cpp` | `snc_cotrain` CLI: two-timescale structure+weight co-training |
 
 ## The compiled graph (CSR)
 
@@ -154,13 +156,57 @@ trained-readout-only baseline stays near chance, showing the local hidden
 learning carries the task. Runs are deterministic for a fixed seed; static-snc
 reaches the same accuracy at ~half the synaptic events of the dense baseline.
 
+## Two-timescale co-training (Track B-1): structure + weights
+
+`snc_cotrain` separates the two clocks of new-plan.md §2/§8.2:
+
+```
+for each outer (structural) round:
+    inner loop:  train weights for K epochs with e-prop      # fast path
+    collect activity stats (per-synapse deliveries, per-neuron firing)
+    structural_update: prune weakest + grow local replacements # slow path
+    recompile graph; carry learned weights across
+```
+
+The slow path lives in `Connectome`, a mutable, position-aware edge list (one
+1-D position per neuron per layer). `structural_update` is **budget-constant
+rewiring**: prune the `K` weakest synapses by |weight| (skipping ones too young
+to have trained), then grow `K` new ones, each connecting spatially-near
+neurons in adjacent layers — targeted at the posts that just lost a synapse and
+biased toward the most-active local pre. Because positions are monotonic in
+index, the locality window is a contiguous index range, so growth is cheap and
+exact. `--grow 0` freezes structure (static baseline) so dynamic vs static can
+be compared at an equal synapse budget and equal epoch count.
+
+```bash
+cmake --build build --target snc_cotrain -j
+./snc_cotrain --outer 16 --inner 2 --grow 80  --structural-budget 800   # dynamic
+./snc_cotrain --outer 16 --inner 2 --grow 0   --structural-budget 800   # static
+```
+
+**Finding (synthetic, 10 classes, noise 0.5, 3 seeds).** Rewiring helps most
+when the budget is *tight* — every synapse must count, so reallocating from
+useless to useful local connections matters:
+
+| synapse budget | static test-acc | dynamic test-acc |
+|---|---|---|
+| ~800  (very tight) | 0.48 | **0.57** |
+| ~1200 (tight)      | 0.62 | 0.62 |
+| ~2800 (ample)      | **0.95** | 0.84 |
+
+At an ample budget the static topology is already sufficient and rewiring churn
+(fresh synapses need re-training) *hurts*. This is a regime result, not a
+universal win, and the rigorous multi-seed / real-data version is Phase-7 work.
+Budget is held constant across rounds (grown == pruned); runs are deterministic
+for a fixed seed.
+
 ## Scope so far
 
 Implemented: graph abstraction + generators, structural→CSR compiler, three
 encoders, cpu/openmp runtimes, a verified Stage-1 CUDA atomic backend, the
-benchmark CLI, and **frozen-structure e-prop training** with per-epoch logging.
+benchmark CLI, **frozen-structure e-prop training**, and **two-timescale
+structure+weight co-training** (grow/prune/rewire on the slow clock).
 
-Not yet (later phases of new-plan.md): two-timescale structure+weight
-co-training and structural epochs (Phase 6), surrogate-gradient BPTT + PyTorch
-bridge (Phase 5), the CUDA bucket/sort reduction backends (Phase 4), and
-event-based / audio datasets (Phase 7).
+Not yet (later phases of new-plan.md): surrogate-gradient BPTT + PyTorch bridge
+(Phase 5), the CUDA bucket/sort reduction backends (Phase 4), event-based /
+audio datasets, and the rigorous multi-seed structure study (Phase 7).
