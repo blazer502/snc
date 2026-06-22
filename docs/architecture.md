@@ -183,6 +183,28 @@ trained-readout-only baseline stays near chance, showing the local hidden
 learning carries the task. Runs are deterministic for a fixed seed; static-snc
 reaches the same accuracy at ~half the synaptic events of the dense baseline.
 
+### GPU-accelerated training
+
+`snc_train --device cuda` runs the same e-prop rule on the GPU, but processes a
+whole **minibatch of samples in parallel** (`--batch`, default 64) — each sample
+is independent under a frozen topology, so per-batch state/eligibility are sized
+`[batch × N]` / `[batch × S]` and the kernels fan out over `batch·N` / `batch·S`
+threads. Poisson encoding runs on-device via cuRAND; weights stay resident
+across the epoch. It is **minibatch SGD** (not bit-identical to the per-sample
+CPU path), so it does `batch×` fewer weight updates per epoch and wants a larger
+learning rate (`--batch 32 --lr 1.0` matches the CPU `--lr 0.08` here). Latency
+encoding is unsupported on the GPU path and falls back to the CPU trainer.
+
+Full MNIST (60k/10k, static-snc, hidden 256), RTX A6000:
+
+| path | epoch time | test acc |
+|---|---|---|
+| CPU (per-sample e-prop) | 23.3 s | 0.939 |
+| **GPU (minibatch e-prop)** | **1.5 s** | **0.941** |
+
+≈ **15× per-epoch speedup at accuracy parity** — full training drops from ~4 min
+to ~18 s. When CUDA is unavailable the flag falls back to the CPU trainer.
+
 ## Two-timescale co-training (Track B-1): structure + weights
 
 `snc_cotrain` separates the two clocks of new-plan.md §2/§8.2:
@@ -261,12 +283,12 @@ tight budget.
 Implemented: graph abstraction + generators, structural→CSR compiler, three
 encoders, cpu/openmp runtimes, **three CUDA delivery backends** (atomic /
 bucket / sort, parity-checked), MNIST + synthetic datasets, the benchmark CLI,
-**frozen-structure e-prop training**, and **two-timescale structure+weight
-co-training** (grow/prune/rewire on the slow clock).
+**frozen-structure e-prop training** (CPU and **GPU minibatch**, ~15× faster),
+and **two-timescale structure+weight co-training** (grow/prune/rewire on the
+slow clock).
 
 Evaluated: the rigorous full-MNIST multi-seed study (Phase 7) — see
 [`experiments-mnist.md`](experiments-mnist.md).
 
 Not yet (later phases of new-plan.md): surrogate-gradient BPTT + PyTorch bridge
-(Phase 5), event-based / audio datasets, CUDA-accelerated training, and deeper /
-multi-layer graphs.
+(Phase 5), event-based / audio datasets, and deeper / multi-layer graphs.
