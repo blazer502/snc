@@ -195,10 +195,36 @@ useless to useful local connections matters:
 | ~2800 (ample)      | **0.95** | 0.84 |
 
 At an ample budget the static topology is already sufficient and rewiring churn
-(fresh synapses need re-training) *hurts*. This is a regime result, not a
-universal win, and the rigorous multi-seed / real-data version is Phase-7 work.
-Budget is held constant across rounds (grown == pruned); runs are deterministic
-for a fixed seed.
+(fresh synapses need re-training) *hurts*. Budget is held constant across rounds
+(grown == pruned); runs are deterministic for a fixed seed.
+
+### Real data: MNIST
+
+```bash
+./scripts/fetch_mnist.sh                       # -> data/mnist/*-ubyte (gitignored)
+
+# Frozen-structure e-prop baseline (no co-training):
+./snc_train  --dataset mnist --data-dir data/mnist --hidden 256 \
+             --num-train 2000 --num-test 1000 --num-steps 20 --epochs 8
+# -> ~0.85 test accuracy, 32k-synapse local SNN, no backprop, ~8 s.
+
+# Two-timescale co-training (genuine t10k test split):
+./snc_cotrain --dataset mnist --data-dir data/mnist --hidden 256 \
+              --num-train 1500 --num-test 1000 --num-steps 20 \
+              --outer 12 --inner 2 --structural-budget 3000 --grow 200
+```
+
+The tight-budget finding **holds on real MNIST** (1500 train / 1000 t10k test,
+3 seeds): dynamic rewiring beats static by ~6 points at the tightest budget, and
+all three seeds agree.
+
+| MNIST synapse budget | static test-acc | dynamic test-acc |
+|---|---|---|
+| ~5200 (loose) | 0.708 | 0.716 |
+| ~2080 (tight) | 0.461 | **0.523** |
+
+This is a regime result on a sub-sampled task, not a final benchmark; the
+rigorous full-MNIST, multi-seed study is Phase-7 work.
 
 ## Scope so far
 

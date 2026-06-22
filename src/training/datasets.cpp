@@ -36,15 +36,19 @@ static uint32_t read_be32(std::ifstream& f) {
          uint32_t(b[3]);
 }
 
-Dataset load_mnist(const std::string& dir, int n) {
+Dataset load_mnist(const std::string& dir, int n, bool test_split) {
   Dataset d;
-  std::ifstream img(dir + "/train-images-idx3-ubyte", std::ios::binary);
-  std::ifstream lab(dir + "/train-labels-idx1-ubyte", std::ios::binary);
+  const std::string ip = test_split ? "/t10k-images-idx3-ubyte"
+                                     : "/train-images-idx3-ubyte";
+  const std::string lp = test_split ? "/t10k-labels-idx1-ubyte"
+                                     : "/train-labels-idx1-ubyte";
+  std::ifstream img(dir + ip, std::ios::binary);
+  std::ifstream lab(dir + lp, std::ios::binary);
   if (!img || !lab) {
     std::fprintf(stderr,
                  "mnist: could not open IDX files under '%s'\n"
-                 "  expected train-images-idx3-ubyte + train-labels-idx1-ubyte\n",
-                 dir.c_str());
+                 "  expected %s + %s (uncompressed)\n",
+                 dir.c_str(), ip.c_str() + 1, lp.c_str() + 1);
     std::exit(1);
   }
   read_be32(img);  // magic

@@ -26,9 +26,10 @@ struct Dataset {
 // noise. Deterministic for a fixed seed. `noise` controls difficulty.
 Dataset make_synthetic(int n, int dim, int classes, float noise, uint64_t seed);
 
-// Minimal MNIST IDX loader. Expects train-images-idx3-ubyte +
-// train-labels-idx1-ubyte (uncompressed) under `dir`; loads up to `n` samples.
-// Exits with a clear message if the files are missing.
-Dataset load_mnist(const std::string& dir, int n);
+// Minimal MNIST IDX loader. Loads up to `n` samples from the train split
+// (train-images-idx3-ubyte / -labels-idx1-ubyte) or, when `test_split` is set,
+// the held-out test split (t10k-images-idx3-ubyte / -labels-idx1-ubyte), both
+// uncompressed under `dir`. Exits with a clear message if the files are missing.
+Dataset load_mnist(const std::string& dir, int n, bool test_split = false);
 
 }  // namespace snc

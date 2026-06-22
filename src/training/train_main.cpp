@@ -153,14 +153,17 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  const int need = o.num_train + o.num_test;
-  Dataset all = o.dataset == "mnist"
-                    ? load_mnist(o.data_dir, need)
-                    : make_synthetic(need, o.dim, o.classes, o.noise, o.seed);
   Dataset train, test;
-  split(all, o.num_train, o.num_test, train, test);
+  if (o.dataset == "mnist") {
+    train = load_mnist(o.data_dir, o.num_train, /*test_split=*/false);
+    test = load_mnist(o.data_dir, o.num_test, /*test_split=*/true);
+  } else {
+    Dataset all = make_synthetic(o.num_train + o.num_test, o.dim, o.classes,
+                                 o.noise, o.seed);
+    split(all, o.num_train, o.num_test, train, test);
+  }
 
-  const std::vector<int> layers = {all.dim, o.hidden, all.classes};
+  const std::vector<int> layers = {train.dim, o.hidden, train.classes};
   SNNGraph g = build_graph(o, layers);
   std::string err;
   if (!g.validate(err)) { std::fprintf(stderr, "graph invalid: %s\n", err.c_str()); return 1; }
@@ -183,8 +186,8 @@ int main(int argc, char** argv) {
   GraphStats gs = compute_stats(g);
   std::printf("structure=%s  %s\n", o.structure.c_str(), format_stats(gs).c_str());
   std::printf("train=%d test=%d classes=%d steps=%d lr=%.3g mode=%s chance=%.3f\n",
-              train.size(), test.size(), all.classes, o.num_steps, o.lr,
-              o.train_mode.c_str(), all.classes ? 1.0 / all.classes : 0.0);
+              train.size(), test.size(), train.classes, o.num_steps, o.lr,
+              o.train_mode.c_str(), train.classes ? 1.0 / train.classes : 0.0);
 
   Trainer trainer(g, cfg);
   std::printf("\nepoch     loss  train_acc  test_acc      spikes        events\n");
