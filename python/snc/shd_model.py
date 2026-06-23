@@ -25,10 +25,14 @@ def _sparse_init(pre, post, H, scale, gen):
 
 class SHDNet(nn.Module):
     def __init__(self, n_in, hidden, n_class, rec_pre, rec_post, in_edges=None,
-                 decay=0.95, thr=1.0, surrogate_scale=10.0, w_rec_scale=0.5, seed=0):
+                 rec_delays=None, decay=0.95, thr=1.0, surrogate_scale=10.0,
+                 w_rec_scale=0.5, seed=0):
         """Recurrent core is always SNC-sparse (rec_pre/rec_post). The input
         projection is dense unless `in_edges=(pre,post)` over [n_in, hidden] is
-        given, in which case it is SNC-sparse (e.g. frequency-local for SHD)."""
+        given, in which case it is SNC-sparse (e.g. frequency-local for SHD).
+        `rec_delays` (per recurrent synapse, >=1) routes each recurrent spike
+        from `delay` steps in the past via a spike ring buffer -- a multi-
+        timescale temporal inductive bias. delay==1 everywhere => plain RSNN."""
         super().__init__()
         SurrogateSpike.scale = surrogate_scale
         self.H, self.decay, self.thr = hidden, decay, thr
@@ -37,6 +41,9 @@ class SHDNet(nn.Module):
         self.register_buffer("rpre", rec_pre.long())
         self.register_buffer("rpost", rec_post.long())
         self.w_rec = nn.Parameter(_sparse_init(rec_pre.long(), rec_post.long(), hidden, w_rec_scale, gen))
+        self.max_delay = int(rec_delays.max()) if rec_delays is not None else 1
+        if self.max_delay > 1:
+            self.register_buffer("rdelay", rec_delays.long())
         self.sparse_in = in_edges is not None
         if self.sparse_in:
             ip, iq = in_edges[0].long(), in_edges[1].long()
@@ -58,11 +65,22 @@ class SHDNet(nn.Module):
         v = torch.zeros(B, self.H, device=dev)
         s = torch.zeros(B, self.H, device=dev)
         cnt = torch.zeros(B, self.H, device=dev)
+        # ring buffer of past spikes; s_hist[k] = spikes from k+1 steps ago
+        s_hist = (torch.zeros(self.max_delay, B, self.H, device=dev)
+                  if self.max_delay > 1 else None)
         for t in range(T):
-            rec = torch.zeros(B, self.H, device=dev).index_add(
-                1, self.rpost, self.w_rec.unsqueeze(0) * s[:, self.rpre])
+            if self.max_delay > 1:
+                # each recurrent synapse reads its pre's spike `delay` steps ago
+                src = s_hist[self.rdelay - 1, :, self.rpre]          # [E, B]
+                rec = torch.zeros(B, self.H, device=dev).index_add(
+                    1, self.rpost, (self.w_rec.unsqueeze(1) * src).t())
+            else:
+                rec = torch.zeros(B, self.H, device=dev).index_add(
+                    1, self.rpost, self.w_rec.unsqueeze(0) * s[:, self.rpre])
             v = self.decay * v + self._input_current(x[:, t]) + rec
             s = SurrogateSpike.apply(v - self.thr)
             v = v * (1.0 - s)
             cnt = cnt + s
+            if self.max_delay > 1:
+                s_hist = torch.cat([s.unsqueeze(0), s_hist[:-1]], dim=0)
         return self.readout(cnt / T)
