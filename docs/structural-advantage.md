@@ -46,14 +46,19 @@ compensates for a weaker topology. So the productive niche is the opposite corne
 does real work, and the whole stack is on-device-friendly. The claim to make is
 **accuracy-per-joule under local learning**, not leaderboard accuracy under BPTT.
 
-### 4. Match the prior to the data — and use *delays*
+### 4. Match the prior to the data — and use *delays*, not locality, for time
 
-Locality is only an advantage when the data is local. MNIST barely exercises it;
-**event-based vision (N-MNIST, DVS) and cochlear audio (SHD)** are where local
-spatiotemporal structure is the right inductive bias. SNC also has a lever random
-graphs lack entirely: **conduction delays derived from morphology**, a temporal
-inductive bias for sequence/temporal tasks (the `delay>1` runtime). This is the
-most under-exploited structural advantage.
+Locality is an advantage only when the data is local **along the connectivity
+axis**, and it is *not* a free lunch. On MNIST (adjacent pixels correlated) it
+Pareto-dominates random sparsity. On **SHD** (audio) it **loses** to random
+sparsity in both the recurrent core and the input projection — digit
+discrimination needs broad spectral/temporal mixing, which local connectivity
+starves ([`experiments-shd.md`](experiments-shd.md)). So the rule is literally
+*match the prior to the task*: brain-like locality helps spatially-local vision
+and hurts integration-heavy audio. The lever that *should* fit temporal data —
+and which random graphs lack entirely — is **conduction delays derived from
+morphology** (the `delay>1` runtime), a temporal inductive bias we have not yet
+exploited. That, not locality, is the structural bet to test on SHD next.
 
 ## Evidence: the accuracy-vs-synapse frontier
 
