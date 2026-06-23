@@ -11,7 +11,7 @@ backs the framing with an accuracy-vs-budget frontier.
 | structure-aware > random sparsity at equal budget (+4 pts) | Exp 1 |
 | the gap **widens as the budget tightens** | Exp 2, frontier (below) |
 | the gap **shrinks as the learner strengthens** (+4 e-prop → +0.7 BPTT) | Exp 4 |
-| **dynamic** structure ≫ static in the scarce regime (+13 pts) | Exp 2 |
+| **dynamic** structure ≫ static in the scarce regime (+13–18 pts) | Exp 2, frontier |
 | sparsity is what makes wide models *fit at all* (dense recurrent OOMs) | LM scaling |
 
 The throughline: **structure substitutes for budget and for optimizer strength.**
@@ -29,12 +29,14 @@ with the largest margin where synapses are scarce. We measure this directly belo
 
 ### 2. Make structural plasticity the engine, not a one-shot prior
 
-The biggest single win was **dynamic** grow/prune/rewire (+13 pts at ~2k
-synapses), not a fixed topology. This is SNC's place in the dynamic-sparse-training
-family (DeepR/RigL/SET — see [`related-work.md`](related-work.md)), with the twist
-that regrowth is **locality- and morphology-constrained** rather than in abstract
-weight space. The lever to push: drive regrowth by *data* (activity correlations),
-anneal the rewiring rate, and run it on the slow structural clock during training.
+The biggest single win was **dynamic** grow/prune/rewire, not a fixed topology:
+on the frontier below it lifts static-snc by **+17.6 pts at a 2k-synapse budget**
+(and +8.9 at 4k), fading to neutral once synapses are plentiful. This is SNC's
+place in the dynamic-sparse-training family (DeepR/RigL/SET — see
+[`related-work.md`](related-work.md)), with the twist that regrowth is **locality-
+and morphology-constrained** rather than in abstract weight space. The lever to
+push: drive regrowth by *data* (activity correlations), anneal the rewiring rate,
+and run it on the slow structural clock during training.
 
 ### 3. Pair structure with *local* learning — don't fight BPTT on accuracy
 
@@ -55,25 +57,40 @@ most under-exploited structural advantage.
 
 ## Evidence: the accuracy-vs-synapse frontier
 
-Frozen-structure e-prop on full MNIST (256 hidden, GPU, 2 seeds). static-snc vs
-random-sparse at a shared budget; best test accuracy, mean ± std:
+e-prop on full MNIST (256 hidden, GPU, 2 seeds), best test accuracy. Three
+topology regimes at a shared budget: random sparse, frozen morphology-constrained
+(`static-snc`), and **dynamically rewired** (`snc_cotrain`, budget-constant
+grow/prune/rewire):
 
-| synapse budget | static-snc | random-sparse | gap |
-|---:|---|---|---:|
-| 2,000  | 0.330 ± 0.004 | 0.235 ± 0.015 | +0.095 |
-| 4,000  | **0.623 ± 0.019** | 0.241 ± 0.008 | **+0.382** |
-| 8,000  | 0.865 ± 0.001 | 0.537 ± 0.062 | +0.328 |
-| 16,000 | 0.914 ± 0.001 | 0.749 ± 0.017 | +0.164 |
-| 40,000 | 0.937 ± 0.000 | 0.898 ± 0.000 | +0.038 |
+| budget | random-sparse | static-snc | **dynamic** | dyn − static |
+|---:|---|---|---|---:|
+| 2,000  | 0.235 | 0.330 | **0.506** | **+0.176** |
+| 4,000  | 0.241 | 0.623 | **0.712** | **+0.089** |
+| 8,000  | 0.537 | 0.865 | 0.866 | +0.001 |
+| 16,000 | 0.749 | 0.914 | 0.920 | +0.006 |
+| 40,000 | 0.898 | 0.937 | 0.944 | +0.007 |
 
-**Reading it:** static-snc Pareto-dominates random-sparse at *every* budget, and
-the gap is largest where synapses are scarce (**+38 pts at 4k**) — exactly the
-regime where the structural prior substitutes for missing synapses. Equivalently,
-**static-snc at 16k synapses (0.914) beats random-sparse at 40k (0.898)**: the
-morphology prior buys a ~2.5× synapse reduction at equal accuracy, and more at
-tighter budgets. As budget → the dense limit both saturate and the gap closes
-(+0.04 at 40k) — mirroring the BPTT result, where a strong optimizer also closes
-the gap. Structure is worth most precisely where you have least.
+(A frozen-vs-`cotrain` static control matched within noise — 0.331 vs 0.330 at
+2k, 0.939 vs 0.937 at 40k — so the dynamic column's lift is the rewiring, not the
+generator.)
+
+**Reading it.** Two nested effects, both concentrated where synapses are scarce:
+
+1. **static-snc Pareto-dominates random-sparse** at every budget — gap largest
+   when tight (+0.38 at 4k), closing toward the dense limit (+0.04 at 40k).
+   Equivalently, static-snc at 16k synapses (0.914) beats random-sparse at 40k
+   (0.898): a ~2.5× synapse reduction at equal accuracy.
+2. **Dynamic rewiring lifts the frontier further still**, and *only* at the tight
+   end: **+17.6 pts at 2k, +8.9 at 4k**, fading to neutral by 8k. At budget 2,000
+   dynamic (0.506) more than doubles random-sparse (0.235).
+
+The pattern is the thesis in one figure: each step of "more structure" — local
+prior, then learned-during-training topology — buys the most exactly where the
+budget is tightest, and washes out as synapses (or optimizer strength, cf. the
+BPTT result) become plentiful. **Structure is worth most precisely where you have
+least.** This is also why dynamic plasticity, not a fixed prior, is the engine to
+push (§2): topology *search* pays off most in the scarce regime where a single
+fixed local prior leaves accuracy on the table.
 
 ## The sharpened thesis
 
