@@ -11,6 +11,8 @@
 //   magic, N, S, num_input_channels, num_output_channels,
 //   pre[S], post[S], delays[S], role[N], channel[N]
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -43,6 +45,7 @@ void put(std::ofstream& f, int32_t v) {
 
 int main(int argc, char** argv) {
   std::string structure = "static-snc", layers_spec = "784,256,10", out = "graph.bin";
+  std::string delay_mode = "random";
   int budget = 40000, delay = 1, delay_max = 1;
   float inhib = 0.2f;
   uint64_t seed = 1;
@@ -55,6 +58,7 @@ int main(int argc, char** argv) {
     else if (a == "--synapse-budget") budget = std::stoi(next());
     else if (a == "--delay") delay = std::stoi(next());
     else if (a == "--delay-max") delay_max = std::stoi(next());  // >1 -> spread [1,delay_max]
+    else if (a == "--delay-mode") delay_mode = next();           // random | distance
     else if (a == "--inhib") inhib = std::stof(next());
     else if (a == "--seed") seed = std::stoull(next());
     else { std::fprintf(stderr, "unknown arg: %s\n", a.c_str()); return 2; }
@@ -71,19 +75,34 @@ int main(int argc, char** argv) {
   std::string err;
   if (!g.validate(err)) { std::fprintf(stderr, "invalid graph: %s\n", err.c_str()); return 1; }
 
-  // Heterogeneous conduction delays: a structural delay distribution (multi-
-  // timescale temporal inductive bias) instead of a single uniform delay.
-  if (delay_max > 1) {
-    std::mt19937_64 rng(seed ^ 0xDE1A0ULL);
-    std::uniform_int_distribution<int> dd(1, delay_max);
-    for (int s = 0; s < g.num_synapses(); ++s) g.delays[s] = dd(rng);
-  }
-
   // Derive pre[] (CSR row owner) from row_ptr.
   const int N = g.num_neurons, S = g.num_synapses();
   std::vector<int32_t> pre(S);
   for (int i = 0; i < N; ++i)
     for (int e = g.row_ptr[i]; e < g.row_ptr[i + 1]; ++e) pre[e] = i;
+
+  // Heterogeneous conduction delays: a structural delay distribution (multi-
+  // timescale temporal inductive bias) instead of a single uniform delay.
+  //   random   -- seeded uniform in [1, delay_max].
+  //   distance -- derived from the connection's span in the 1-D layer embedding
+  //               (|pre_idx - post_idx| over a 2-layer [A,B] graph) -> a
+  //               morphology/geometry-derived delay (short links = short delays).
+  if (delay_max > 1) {
+    if (delay_mode == "distance" && layers.size() >= 2) {
+      const int A = layers[0], B = layers[1];
+      const double denom = std::max(1, std::max(A, B) - 1);
+      for (int s = 0; s < S; ++s) {
+        const int post_idx = g.post_ids[s] - A;  // [0, B)
+        const double d = std::abs(pre[s] - post_idx) / denom;  // [0,1]
+        int del = 1 + static_cast<int>(std::lround(d * (delay_max - 1)));
+        g.delays[s] = std::max(1, std::min(delay_max, del));
+      }
+    } else {
+      std::mt19937_64 rng(seed ^ 0xDE1A0ULL);
+      std::uniform_int_distribution<int> dd(1, delay_max);
+      for (int s = 0; s < S; ++s) g.delays[s] = dd(rng);
+    }
+  }
 
   std::ofstream f(out, std::ios::binary);
   if (!f) { std::fprintf(stderr, "cannot open %s\n", out.c_str()); return 1; }
