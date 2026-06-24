@@ -18,7 +18,7 @@ results, and origins.
 | doc | what it covers |
 |---|---|
 | [experiments-mnist.md](experiments-mnist.md) | Full-MNIST multi-seed study: structure-aware vs random sparsity (Exp 1), dynamic co-training (Exp 2), depth (Exp 3), surrogate-gradient BPTT (Exp 4). Error-barred. |
-| [experiments-shd.md](experiments-shd.md) | SHD spoken-digit audio: a recurrent spiking classifier; the locality prior *fails* here, while a spread of conduction *delays* helps (+3.4 pts). |
+| [experiments-shd.md](experiments-shd.md) | SHD/SSC spoken-audio: recurrent spiking classifier (locality fails, delays help); 2-layer adaptive + augmentation reaches SHD 0.855 / SSC 0.640; spike-reg accuracy/energy frontier. |
 | [structural-advantage.md](structural-advantage.md) | Synthesis: *when* structure helps, and the accuracy-vs-synapse-budget frontier (static / dynamic / random), incl. the dynamic-co-training frontier. |
 | [llm-direction.md](llm-direction.md) | Recurrent spiking language model (next-token BPTT) and the width/depth/context scaling study. |
 
@@ -41,7 +41,7 @@ results, and origins.
 ```bash
 cmake -S . -B build-cuda -DCMAKE_BUILD_TYPE=Release -DSNC_ENABLE_CUDA=ON
 cmake --build build-cuda -j
-./scripts/fetch_mnist.sh ; ./scripts/fetch_shd.sh
+./scripts/fetch_mnist.sh ; ./scripts/fetch_shd.sh ; ./scripts/fetch_ssc.sh
 
 DEVICE=cuda ./scripts/run_mnist_study.sh   # Exp 1-2 (e-prop + cotrain)
 ./scripts/run_bptt_sweep.sh                # Exp 4 (BPTT, multi-seed)

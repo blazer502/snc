@@ -23,7 +23,7 @@ import torch
 import torch.nn.functional as F
 
 import snc
-from snc.shd import load_shd, N_CHANNELS, N_CLASSES
+from snc.shd import load_dataset, N_CHANNELS
 from snc.shd_model import SHDNet
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -31,7 +31,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def parse():
     p = argparse.ArgumentParser()
-    p.add_argument("--data-dir", default=os.path.join(ROOT, "data/shd"))
+    p.add_argument("--dataset", default="shd", choices=["shd", "ssc"])
+    p.add_argument("--data-dir", default="", help="default: data/<dataset>")
     p.add_argument("--layers", default="256", help="recurrent layer widths, e.g. 256 or 256,256")
     p.add_argument("--rec-structure", default="random-sparse",
                    choices=["dense", "random-sparse", "static-snc"])
@@ -112,7 +113,8 @@ def main():
     torch.manual_seed(a.seed); np.random.seed(a.seed)
     device = a.device if (a.device != "cuda" or torch.cuda.is_available()) else "cpu"
 
-    xtr, ytr, xte, yte = load_shd(a.data_dir, T=a.steps)
+    data_dir = a.data_dir or os.path.join(ROOT, "data", a.dataset)
+    xtr, ytr, xte, yte, n_class = load_dataset(data_dir, a.dataset, T=a.steps)
     hidden = [int(h) for h in a.layers.split(",")]
     rec_edges, rec_delays, ff_edges, tot_edges = [], [], [None], 0
     for l, H in enumerate(hidden):
@@ -128,7 +130,7 @@ def main():
         ip, iq, _, _ = export_graph(a, a.in_structure, N_CHANNELS, hidden[0], a.in_budget, 999)
         in_edges = (ip, iq)
 
-    model = SHDNet(N_CHANNELS, hidden, N_CLASSES, rec_edges, ff_edges=ff_edges,
+    model = SHDNet(N_CHANNELS, hidden, n_class, rec_edges, ff_edges=ff_edges,
                    rec_delays=rec_delays, in_edges=in_edges, decay=a.decay, thr=a.threshold,
                    surrogate_scale=a.surrogate_scale, w_rec_scale=a.w_rec_scale, seed=a.seed,
                    adaptive=bool(a.adaptive), learn_tau=bool(a.learn_tau), readout=a.readout).to(device)
@@ -136,10 +138,10 @@ def main():
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=a.epochs)
     n_params = sum(p.numel() for p in model.parameters())
 
-    print(f"device={device} SHD train={len(xtr)} test={len(xte)} steps={a.steps} "
-          f"layers={hidden} rec={a.rec_structure} delay_max={a.delay_max}({a.delay_mode}) "
+    print(f"device={device} {a.dataset.upper()} train={len(xtr)} test={len(xte)} classes={n_class} "
+          f"steps={a.steps} layers={hidden} rec={a.rec_structure} delay_max={a.delay_max}({a.delay_mode}) "
           f"adaptive={a.adaptive} learn_tau={a.learn_tau} augment={a.augment} "
-          f"sparse_edges={tot_edges} params={n_params} chance={1/N_CLASSES:.3f}")
+          f"sparse_edges={tot_edges} params={n_params} chance={1/n_class:.3f}")
     print(f"\n{'epoch':>5}  {'loss':>6}  {'train_acc':>9}  {'test_acc':>8}  {'spk/n/step':>10}")
     csv = open(a.log_csv, "w") if a.log_csv else None
     if csv: csv.write("epoch,loss,train_acc,test_acc,spike_rate\n")

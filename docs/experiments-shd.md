@@ -119,7 +119,11 @@ standard, structure-preserving SNN levers lifts SHD accuracy by **+6 points**:
 |---|---|
 | 1-layer LIF (baseline) | 0.777 |
 | 1-layer AdLIF + PLIF (drop-in) | 0.758 |
-| **2-layer AdLIF + PLIF + augmentation** | **0.836 ± 0.008** (best 0.845) |
+| 2-layer AdLIF + PLIF + augmentation (60 ep) | 0.836 ± 0.008 |
+| **+ longer training (120 ep, 2 seeds)** | **0.855 ± 0.011** (best 0.866) |
+
+Full recipe vs the LIF baseline: **0.777 → 0.855 (+7.8 pts)**, in the range of
+published adaptive-RSNN SHD results — with the SNC-sparse topology + delays kept.
 
 The lesson is which lever, and when:
 
@@ -137,6 +141,23 @@ of a seeded draw (`--delay-mode distance`: delay ∝ the connection's span in th
 1-D layer embedding). On the 2-layer model it matches the random spread
 (distance 0.841 vs random 0.845, single seed) — the faithful, morphology-grounded
 version delivers the same temporal benefit.
+
+## Scaling up: SSC (35-class spoken commands)
+
+SSC (Spiking Speech Commands) is SHD's larger, harder sibling — **35 classes,
+75,466 train / 20,382 test**, same 700-channel cochlear format. The *identical*
+2-layer adaptive + augmentation recipe (`--dataset ssc`, 30 epochs, 2 seeds, GPU
+BPTT) reaches:
+
+| dataset | classes | train | best test acc | chance |
+|---|---:|---:|---|---:|
+| SHD | 20 | 8,156 | 0.855 ± 0.011 (best 0.866) | 0.05 |
+| **SSC** | 35 | 75,466 | **0.640 ± 0.001** | 0.029 |
+
+A solid first SSC number for the substrate (in the range of recurrent-SNN SSC
+baselines), reached with no task-specific tuning — the same SNC-sparse +
+delay + adaptive recipe transfers from SHD to the 10× larger benchmark.
+(`./scripts/fetch_ssc.sh` to get the data.)
 
 ## Inference efficiency: spike-frequency regularization frontier
 
