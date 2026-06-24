@@ -110,35 +110,53 @@ point is the controlled +3.4-pt effect of a delay *spread*, not the absolute
 number. Deriving the spread from morphology rather than a seeded draw is the
 faithful next step.)
 
-## Training & inference performance (structure-preserving)
+## Pushing accuracy: 2-layer adaptive RSNN + augmentation
 
-Levers that improve training/inference *without touching the connectivity* (the
-SNC-sparse recurrent core + delays are unchanged throughout):
+All of the above keeps the **structure** (SNC-sparse recurrent + delays). Adding
+standard, structure-preserving SNN levers lifts SHD accuracy by **+6 points**:
 
-**Training speed.** The C++ GPU minibatch e-prop trainer runs ~15× faster than
-the per-sample CPU path (see [`architecture.md`](architecture.md)); the PyTorch
-BPTT path is GPU-resident. Optimiser upgrades (AdamW + cosine schedule) are in
-`train_shd.py`.
+| model (random-sparse rec, delay-30, BPTT) | best test acc |
+|---|---|
+| 1-layer LIF (baseline) | 0.777 |
+| 1-layer AdLIF + PLIF (drop-in) | 0.758 |
+| **2-layer AdLIF + PLIF + augmentation** | **0.836 ± 0.008** (best 0.845) |
 
-**Inference efficiency + accuracy — spike-frequency regularization.** SHD is
-overfitting-limited (train ≈ 1.0, test ≈ 0.78). A small penalty on the mean
-firing rate (`--spike-reg`) regularizes it *and* makes the already-sparse network
-fire less — fewer spikes is directly cheaper event-driven inference. Best test
-acc, LIF, random-sparse + delay-30, 40 epochs:
+The lesson is which lever, and when:
 
-| spike-reg | test acc | firing rate (spk/neuron/step) |
-|---:|---|---|
-| 0.0  | 0.757 | 0.414 |
-| 0.05 | 0.760 | 0.382 (−8%) |
-| **0.2** | **0.776** | **0.287 (−31%)** |
+- **Adaptive neurons alone do not help** as a single-layer drop-in (0.758 < 0.777).
+- **Augmentation is the unlock.** SHD's test set is speaker-disjoint, so a
+  single-layer net overfits (train ≈ 1.0, test ≈ 0.78). Per-sample time + channel
+  jitter (`--augment`, vectorised roll) closes that gap (train ≈ 0.97, test ≈ 0.84),
+  and only *then* do **depth (2 stacked recurrent layers) + AdLIF + learnable τ**
+  pay off — reaching ~0.84, in the range of published adaptive-RSNN SHD baselines.
 
-So spike-reg = 0.2 **raises accuracy ~+2 pts and cuts firing ~31%** at once — a
-double win that *leverages* the structured sparsity (a sparse graph firing
-sparsely is the cheapest event-driven regime).
+`python3 python/train_shd.py --layers 256,256 --adaptive 1 --learn-tau 1 --augment 1 --delay-max 30`
 
-**Adaptive neurons (AdLIF) and learnable time constants (PLIF)** are implemented
-as opt-in flags (`--adaptive`, `--learn-tau`), but on this single-layer SHD setup
-they did **not** beat plain LIF (LIF 0.777 vs AdLIF 0.758 at 60 epochs). The
-literature's adaptive-neuron gains (~84%) come from 2-layer adaptive networks
-with augmentation; a drop-in single-layer AdLIF did not help here, so it is not
-the default. Reported straight rather than dressed up.
+**Morphology-derived delays.** The delay *spread* can come from geometry instead
+of a seeded draw (`--delay-mode distance`: delay ∝ the connection's span in the
+1-D layer embedding). On the 2-layer model it matches the random spread
+(distance 0.841 vs random 0.845, single seed) — the faithful, morphology-grounded
+version delivers the same temporal benefit.
+
+## Inference efficiency: spike-frequency regularization frontier
+
+A penalty on the mean firing rate (`--spike-reg`) makes the already-sparse network
+fire *less* — fewer spikes is directly cheaper event-driven inference — and it
+also regularizes. Accuracy vs firing rate on the 2-layer model (50 epochs):
+
+| spike-reg | test acc | firing rate (spk/neuron/step) | Δ firing |
+|---:|---|---|---:|
+| 0.0  | 0.839 | 0.353 | — |
+| 0.05 | 0.836 | 0.283 | **−20%** |
+| 0.2  | 0.812 | 0.178 | −50% |
+| 0.5  | 0.807 | 0.092 | **−74%** |
+
+A monotone accuracy/energy frontier: **−20% firing for −0.3 pts (near-free), up to
+−74% firing for ~−3 pts** — pick the operating point for your event-driven
+inference budget. (On the *overfit* 1-layer model spike-reg also *raised* accuracy
+0.757→0.776; on the augmented 2-layer model, which is no longer overfit, it trades
+accuracy for firing rate. Both honest, both structure-preserving.)
+
+**Training speed.** Orthogonally, the C++ GPU minibatch e-prop trainer runs ~15×
+faster than the per-sample CPU path (see [`architecture.md`](architecture.md));
+the PyTorch BPTT path is GPU-resident, with AdamW + cosine schedule.
