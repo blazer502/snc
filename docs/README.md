@@ -11,6 +11,7 @@ results, and origins.
 | [architecture.md](architecture.md) | The substrate: three-layer separation (structural → compiled CSR graph → runtime), execution model, all CPU/CUDA backends, and the training paths (e-prop CPU+GPU, two-timescale co-training, PyTorch BPTT). The implementation reference. |
 | [new-plan.md](new-plan.md) | The repositioning plan (brain-sim → SNN substrate) and phased roadmap. |
 | [../python/README.md](../python/README.md) | The PyTorch bridge: `snc_export` → load graph → surrogate-gradient BPTT (SNN / LM / SHD models). |
+| [voxel-encoding.md](voxel-encoding.md) | Design study: 2-bit vs 1-bit structural voxels (why 2-bit stays). |
 
 ## Experiments & results
 

@@ -109,3 +109,36 @@ either alone:
 point is the controlled +3.4-pt effect of a delay *spread*, not the absolute
 number. Deriving the spread from morphology rather than a seeded draw is the
 faithful next step.)
+
+## Training & inference performance (structure-preserving)
+
+Levers that improve training/inference *without touching the connectivity* (the
+SNC-sparse recurrent core + delays are unchanged throughout):
+
+**Training speed.** The C++ GPU minibatch e-prop trainer runs ~15× faster than
+the per-sample CPU path (see [`architecture.md`](architecture.md)); the PyTorch
+BPTT path is GPU-resident. Optimiser upgrades (AdamW + cosine schedule) are in
+`train_shd.py`.
+
+**Inference efficiency + accuracy — spike-frequency regularization.** SHD is
+overfitting-limited (train ≈ 1.0, test ≈ 0.78). A small penalty on the mean
+firing rate (`--spike-reg`) regularizes it *and* makes the already-sparse network
+fire less — fewer spikes is directly cheaper event-driven inference. Best test
+acc, LIF, random-sparse + delay-30, 40 epochs:
+
+| spike-reg | test acc | firing rate (spk/neuron/step) |
+|---:|---|---|
+| 0.0  | 0.757 | 0.414 |
+| 0.05 | 0.760 | 0.382 (−8%) |
+| **0.2** | **0.776** | **0.287 (−31%)** |
+
+So spike-reg = 0.2 **raises accuracy ~+2 pts and cuts firing ~31%** at once — a
+double win that *leverages* the structured sparsity (a sparse graph firing
+sparsely is the cheapest event-driven regime).
+
+**Adaptive neurons (AdLIF) and learnable time constants (PLIF)** are implemented
+as opt-in flags (`--adaptive`, `--learn-tau`), but on this single-layer SHD setup
+they did **not** beat plain LIF (LIF 0.777 vs AdLIF 0.758 at 60 epochs). The
+literature's adaptive-neuron gains (~84%) come from 2-layer adaptive networks
+with augmentation; a drop-in single-layer AdLIF did not help here, so it is not
+the default. Reported straight rather than dressed up.

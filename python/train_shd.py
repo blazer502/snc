@@ -48,6 +48,12 @@ def parse():
     p.add_argument("--threshold", type=float, default=1.0)
     p.add_argument("--surrogate-scale", type=float, default=10.0)
     p.add_argument("--w-rec-scale", type=float, default=0.5)
+    # structure-preserving accuracy/efficiency upgrades
+    p.add_argument("--adaptive", type=int, default=0, help="AdLIF adaptive threshold (1/0; opt-in)")
+    p.add_argument("--learn-tau", type=int, default=0, help="learnable membrane decay PLIF (1/0; opt-in)")
+    p.add_argument("--readout", default="rate", choices=["rate", "leaky"])
+    p.add_argument("--spike-reg", type=float, default=0.0, help="firing-rate penalty (inference cost)")
+    p.add_argument("--weight-decay", type=float, default=0.0)
     p.add_argument("--device", default="cuda")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--export-bin", default=os.path.join(ROOT, "build/snc_export"))
@@ -97,17 +103,21 @@ def main():
     model = SHDNet(N_CHANNELS, a.hidden, N_CLASSES, pre, post, in_edges=in_edges,
                    rec_delays=(rec_delays if a.delay_max > 1 else None),
                    decay=a.decay, thr=a.threshold, surrogate_scale=a.surrogate_scale,
-                   w_rec_scale=a.w_rec_scale, seed=a.seed).to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=a.lr)
+                   w_rec_scale=a.w_rec_scale, seed=a.seed, adaptive=bool(a.adaptive),
+                   learn_tau=bool(a.learn_tau), readout=a.readout).to(device)
+    opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=a.weight_decay)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=a.epochs)
     n_params = sum(p.numel() for p in model.parameters())
 
     print(f"device={device} SHD train={len(xtr)} test={len(xte)} steps={a.steps} "
           f"rec={a.rec_structure} in={a.in_structure} delay_max={a.delay_max} "
+          f"adaptive={a.adaptive} learn_tau={a.learn_tau} readout={a.readout} "
           f"rec_edges={E} params={n_params} chance={1/N_CLASSES:.3f}")
-    print(f"\n{'epoch':>5}  {'loss':>6}  {'train_acc':>9}  {'test_acc':>8}")
+    print(f"\n{'epoch':>5}  {'loss':>6}  {'train_acc':>9}  {'test_acc':>8}  {'spk/n/step':>10}")
     csv = open(a.log_csv, "w") if a.log_csv else None
-    if csv: csv.write("epoch,loss,train_acc,test_acc\n")
+    if csv: csv.write("epoch,loss,train_acc,test_acc,spike_rate\n")
 
+    best = 0.0
     for e in range(1, a.epochs + 1):
         model.train()
         order = np.random.permutation(len(xtr))
@@ -118,16 +128,19 @@ def main():
             yb = torch.from_numpy(ytr[idx]).to(device)
             opt.zero_grad()
             logits = model(xb)
-            loss = F.cross_entropy(logits, yb)
+            loss = F.cross_entropy(logits, yb) + a.spike_reg * model.spk_reg
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
             loss_sum += loss.item() * len(idx)
             correct += (logits.argmax(1) == yb).sum().item()
+        sched.step()
         tr = correct / len(xtr)
         te = evaluate(model, xte, yte, a.batch, device)
-        print(f"{e:>5}  {loss_sum/len(xtr):>6.3f}  {tr:>9.4f}  {te:>8.4f}")
-        if csv: csv.write(f"{e},{loss_sum/len(xtr):.5f},{tr:.5f},{te:.5f}\n")
+        best = max(best, te)
+        print(f"{e:>5}  {loss_sum/len(xtr):>6.3f}  {tr:>9.4f}  {te:>8.4f}  {model.spike_rate:>10.4f}")
+        if csv: csv.write(f"{e},{loss_sum/len(xtr):.5f},{tr:.5f},{te:.5f},{model.spike_rate:.5f}\n")
+    print(f"best test_acc = {best:.4f}")
     if csv: csv.close(); print(f"wrote {a.log_csv}")
 
 
