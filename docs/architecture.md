@@ -1,10 +1,10 @@
 # SNC Architecture: Structure-Aware SNN Substrate
 
-This document describes the runtime substrate added on top of the original
-brain-development simulator. It implements the first slice of
-[`new-plan.md`](new-plan.md): reposition SNC as a **structure-aware spiking
-neural computing substrate** that separates slow structural evolution from fast
-spike execution.
+This document is the implementation reference for the structure-aware SNN
+substrate built on top of the original brain-development simulator (the plan:
+[`new-plan.md`](new-plan.md)). It separates slow structural evolution from fast
+spike execution. For *results* see the [documentation index](README.md)
+(MNIST / SHD studies, the structural-advantage frontier, the spiking LM).
 
 ```
 [Structural Layer]   BrainGrid + Simulator + Neuron   (existing)
@@ -33,14 +33,16 @@ backend.
 | `include/snc/snn_graph.hpp`, `src/graph/snn_graph.cpp` | `SNNGraph` (CSR), generators (`make_dense`, `make_random_sparse`, `make_static_snc`), `compile_from_simulator`, `compute_stats`, `validate` |
 | `include/snc/encoders.hpp`, `src/training/encoders.cpp` | `InputEvent` + `direct` / `poisson` / `latency` encoders |
 | `include/snc/runtime.hpp`, `src/runtime/cpu_backend.cpp` | `Backend` enum, LIF `forward()` over CSR, CPU + OpenMP |
-| `src/runtime/cuda_backend.cu` | Stage-1 atomic CUDA forward (built with `-DSNC_ENABLE_CUDA=ON`) |
+| `src/runtime/cuda_backend.cu` | three CUDA delivery backends — **atomic / bucket / sort** (`-DSNC_ENABLE_CUDA=ON`) |
 | `src/runtime/cuda_stub.cpp` | no-op `cuda::*` symbols for non-CUDA builds |
 | `include/snc/dataset.hpp`, `src/training/datasets.cpp` | `Dataset` + synthetic generator + MNIST IDX loader |
-| `include/snc/trainer.hpp`, `src/training/trainer.cpp` | frozen-structure **e-prop** weight training |
+| `include/snc/trainer.hpp`, `src/training/trainer.cpp` | frozen-structure **e-prop** weight training (CPU) |
+| `include/snc/cuda_trainer.hpp`, `src/training/cuda_trainer.cu` | **GPU minibatch e-prop** (≈15× faster) |
 | `include/snc/connectome.hpp`, `src/structure/connectome.cpp` | mutable position-aware connectome + grow/prune/rewire |
 | `src/bench/snc_bench.cpp` | `snc_bench` CLI: build graph, encode, run, report |
-| `src/training/train_main.cpp` | `snc_train` CLI: train frozen-topology weights, log per epoch |
-| `src/training/cotrain_main.cpp` | `snc_cotrain` CLI: two-timescale structure+weight co-training |
+| `src/bench/snc_export.cpp` | `snc_export`: dump CSR (+ heterogeneous delays) for the PyTorch bridge |
+| `src/training/train_main.cpp`, `cotrain_main.cpp` | `snc_train` (frozen) / `snc_cotrain` (two-timescale) CLIs |
+| `python/snc/` | PyTorch bridge: graph loader + SNN / LM (`lm.py`) / SHD (`shd_model.py`) models, surrogate-gradient BPTT |
 
 ## The compiled graph (CSR)
 
@@ -309,5 +311,17 @@ the structure + spiking model. See [`python/README.md`](../python/README.md).
 On MNIST, BPTT reaches ~0.975 (vs ~0.940 for e-prop; 3 seeds), removes the depth
 penalty, and lets static-snc match dense at ~6× fewer synapses (Exp 4).
 
-Not yet (later phases of new-plan.md): event-based / audio datasets, and a
-PyTorch path for delayed (delay>1) graphs.
+**Event/temporal data + delays.** SHD (spoken-digit cochlear spikes) runs via a
+recurrent spiking classifier, and `snc_export --delay-max D` + the model's spike
+ring buffer give heterogeneous conduction **delays** (delay>1). On SHD a delay
+spread helps (+3.4 pts) while spatial locality hurts — see
+[`experiments-shd.md`](experiments-shd.md).
+
+**Applications / results docs:** [`experiments-mnist.md`](experiments-mnist.md),
+[`experiments-shd.md`](experiments-shd.md),
+[`structural-advantage.md`](structural-advantage.md) (the efficiency frontier),
+[`llm-direction.md`](llm-direction.md) (spiking LM), and
+[`related-work.md`](related-work.md).
+
+Not yet (new-plan.md): event-camera vision (N-MNIST / DVS), learnable delays, and
+GPU structural kernels.
