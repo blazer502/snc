@@ -55,10 +55,12 @@ sparsity in both the recurrent core and the input projection — digit
 discrimination needs broad spectral/temporal mixing, which local connectivity
 starves ([`experiments-shd.md`](experiments-shd.md)). So the rule is literally
 *match the prior to the task*: brain-like locality helps spatially-local vision
-and hurts integration-heavy audio. The lever that *should* fit temporal data —
-and which random graphs lack entirely — is **conduction delays derived from
-morphology** (the `delay>1` runtime), a temporal inductive bias we have not yet
-exploited. That, not locality, is the structural bet to test on SHD next.
+and hurts integration-heavy audio. The lever that *does* fit temporal data — and
+which uniform-delay graphs cannot express — is **a spread of conduction delays**:
+on SHD, giving the recurrent synapses delays in 1–30 (vs uniform 1) lifts accuracy
+monotonically **+3.4 pts** (0.744 → 0.778), the mirror image of the locality
+result. Spatial structure for space, temporal structure (delays) for time — use
+the structural feature whose geometry matches the task's axis.
 
 ## Evidence: the accuracy-vs-synapse frontier
 

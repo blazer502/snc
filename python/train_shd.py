@@ -34,6 +34,8 @@ def parse():
     p.add_argument("--rec-structure", default="static-snc",
                    choices=["dense", "random-sparse", "static-snc"])
     p.add_argument("--rec-budget", type=int, default=8192)
+    p.add_argument("--delay-max", type=int, default=1,
+                   help=">1 gives recurrent synapses a delay spread [1,delay-max]")
     p.add_argument("--in-structure", default="dense",
                    choices=["dense", "random-sparse", "static-snc"],
                    help="input projection topology (700 cochlear channels -> hidden)")
@@ -53,12 +55,12 @@ def parse():
     return p.parse_args()
 
 
-def export_graph(a, structure, A, B, budget, sub_seed):
-    """SNC [A,B] graph -> (pre in [0,A), post in [0,B)) + edge count."""
+def export_graph(a, structure, A, B, budget, sub_seed, delay_max=1):
+    """SNC [A,B] graph -> (pre in [0,A), post in [0,B), delays) + edge count."""
     tmp = tempfile.NamedTemporaryFile(suffix=".bin", delete=False); tmp.close()
     cmd = [a.export_bin, "--structure", structure, "--layers", f"{A},{B}",
            "--synapse-budget", str(budget), "--seed", str(a.seed * 100 + sub_seed),
-           "--out", tmp.name]
+           "--delay-max", str(delay_max), "--out", tmp.name]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         sys.exit(f"snc_export failed:\n{r.stderr}")
@@ -66,7 +68,8 @@ def export_graph(a, structure, A, B, budget, sub_seed):
     g = snc.load_graph(tmp.name)
     pre = torch.from_numpy(g["pre"].astype(np.int64))
     post = torch.from_numpy(g["post"].astype(np.int64)) - A
-    return pre, post, g["S"]
+    delays = torch.from_numpy(g["delays"].astype(np.int64))
+    return pre, post, delays, g["S"]
 
 
 @torch.no_grad()
@@ -85,20 +88,22 @@ def main():
     device = a.device if (a.device != "cuda" or torch.cuda.is_available()) else "cpu"
 
     xtr, ytr, xte, yte = load_shd(a.data_dir, T=a.steps)
-    pre, post, E = export_graph(a, a.rec_structure, a.hidden, a.hidden, a.rec_budget, 0)
+    pre, post, rec_delays, E = export_graph(a, a.rec_structure, a.hidden, a.hidden,
+                                            a.rec_budget, 0, delay_max=a.delay_max)
     in_edges = None
     if a.in_structure != "dense":
-        ip, iq, _ = export_graph(a, a.in_structure, N_CHANNELS, a.hidden, a.in_budget, 1)
+        ip, iq, _, _ = export_graph(a, a.in_structure, N_CHANNELS, a.hidden, a.in_budget, 1)
         in_edges = (ip, iq)
     model = SHDNet(N_CHANNELS, a.hidden, N_CLASSES, pre, post, in_edges=in_edges,
+                   rec_delays=(rec_delays if a.delay_max > 1 else None),
                    decay=a.decay, thr=a.threshold, surrogate_scale=a.surrogate_scale,
                    w_rec_scale=a.w_rec_scale, seed=a.seed).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=a.lr)
     n_params = sum(p.numel() for p in model.parameters())
 
     print(f"device={device} SHD train={len(xtr)} test={len(xte)} steps={a.steps} "
-          f"rec={a.rec_structure} in={a.in_structure} rec_edges={E} params={n_params} "
-          f"chance={1/N_CLASSES:.3f}")
+          f"rec={a.rec_structure} in={a.in_structure} delay_max={a.delay_max} "
+          f"rec_edges={E} params={n_params} chance={1/N_CLASSES:.3f}")
     print(f"\n{'epoch':>5}  {'loss':>6}  {'train_acc':>9}  {'test_acc':>8}")
     csv = open(a.log_csv, "w") if a.log_csv else None
     if csv: csv.write("epoch,loss,train_acc,test_acc\n")

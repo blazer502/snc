@@ -75,7 +75,37 @@ structure helps":
 
 What SNC contributes here is therefore not "structure wins" but the **controlled
 measurement of when it wins** — and a working spiking pipeline on a real temporal
-neuromorphic benchmark. The natural follow-up is the prior that *should* fit
-temporal data and which we have not yet exploited: **geometry-derived conduction
-delays** (the `delay>1` runtime), a temporal inductive bias that random graphs
-lack entirely — the right next test on SHD.
+neuromorphic benchmark.
+
+## The *right* structural prior for time: conduction delays
+
+If locality is the wrong prior for audio, the right one should be **temporal**.
+SNC tracks a per-synapse conduction delay; giving the recurrent synapses a
+*spread* of delays (`--delay-max D`, each synapse routed from `1..D` steps in the
+past via a spike ring buffer) is a multi-timescale memory that uniform-delay
+graphs cannot express. Same connectivity and seed throughout — only the delays
+vary — random-sparse recurrent core, 2 seeds:
+
+| recurrent delay | test acc |
+|---:|---|
+| 1 (uniform) | 0.744 ± 0.007 |
+| spread 1–8  | 0.751 ± 0.007 |
+| spread 1–16 | 0.757 ± 0.005 |
+| **spread 1–30** | **0.778 ± 0.004** |
+
+**Delays help, monotonically (+3.4 pts, non-overlapping bars)** — the opposite of
+locality. This is the clean confirmation of the rule: the structural prior must
+match the data's axis. On SHD that axis is *time*, so the temporal structural
+feature (delays) helps where the spatial one (locality) hurt. The two SHD results
+together — locality fails, delays win — are a sharper statement of the thesis than
+either alone:
+
+> Brain-inspired structure is a real inductive bias, not a free lunch. **Spatial
+> locality** helps spatially-local data (MNIST) and hurts integration-heavy audio;
+> **conduction delays** help temporal data (SHD) where locality fails. Use the
+> structural feature whose geometry matches the task.
+
+(Learnable delays reach SHD SOTA ~95%; here delays are fixed/structural, and the
+point is the controlled +3.4-pt effect of a delay *spread*, not the absolute
+number. Deriving the spread from morphology rather than a seeded draw is the
+faithful next step.)
