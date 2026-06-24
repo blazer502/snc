@@ -1,29 +1,29 @@
-"""Spiking Heidelberg Digits (SHD) loader.
+"""Loaders for spiking-audio benchmarks (Cramer et al. 2019): SHD and SSC.
 
-SHD (Cramer et al. 2019) is spoken digits 0-9 in English + German (20 classes),
-converted to spike trains by a cochlear model: each sample is a list of
-(time, unit) events over 700 frequency channels and ~1 s. A genuinely temporal,
-neuromorphic benchmark -- the regime where SNC's locality + timing prior should
-matter most.
+Both convert spoken audio to spike trains via a cochlear model -- each sample is
+a list of (time, unit) events over 700 frequency channels and ~1 s.
+  * SHD -- Spiking Heidelberg Digits: 20 classes (digits 0-9, EN+DE).
+  * SSC -- Spiking Speech Commands: 35 classes (Google Speech Commands words),
+           ~10x larger; harder, the standard "scale up" sibling of SHD.
 
 This bins the variable-length event lists into dense [N, T, 700] binary spike
-tensors and caches them as .npy for fast reload. Fetch the HDF5 files first:
-    curl -L https://zenkelab.org/datasets/shd_train.h5.gz | gunzip > data/shd/shd_train.h5
-    curl -L https://zenkelab.org/datasets/shd_test.h5.gz  | gunzip > data/shd/shd_test.h5
+tensors and caches them as .npz. Fetch the HDF5 files first (gitignored):
+    ./scripts/fetch_shd.sh        # data/shd/{shd_train,shd_test}.h5
+    ./scripts/fetch_ssc.sh        # data/ssc/{ssc_train,ssc_test}.h5
 """
 import os
 import numpy as np
 
 N_CHANNELS = 700
-N_CLASSES = 20
+CLASSES = {"shd": 20, "ssc": 35}
+N_CLASSES = CLASSES["shd"]  # back-compat default
 
 
 def _bin_split(h5_path, T, t_max):
     import h5py
     dt = t_max / T
     with h5py.File(h5_path, "r") as f:
-        times = f["spikes"]["times"]
-        units = f["spikes"]["units"]
+        times, units = f["spikes"]["times"], f["spikes"]["units"]
         labels = np.asarray(f["labels"], dtype=np.int64)
         n = len(labels)
         x = np.zeros((n, T, N_CHANNELS), dtype=np.uint8)
@@ -35,14 +35,22 @@ def _bin_split(h5_path, T, t_max):
     return x, labels
 
 
-def load_shd(data_dir, T=100, t_max=1.0, cache=True):
-    """Returns (xtr, ytr, xte, yte); x: [N, T, 700] uint8, y: [N] int64."""
-    cache_path = os.path.join(data_dir, f"shd_binned_T{T}.npz")
+def load_dataset(data_dir, dataset="shd", T=100, t_max=1.0, cache=True):
+    """Returns (xtr, ytr, xte, yte, n_classes). x: [N,T,700] uint8, y: [N] int64."""
+    cache_path = os.path.join(data_dir, f"{dataset}_binned_T{T}.npz")
     if cache and os.path.exists(cache_path):
         d = np.load(cache_path)
-        return d["xtr"], d["ytr"], d["xte"], d["yte"]
-    xtr, ytr = _bin_split(os.path.join(data_dir, "shd_train.h5"), T, t_max)
-    xte, yte = _bin_split(os.path.join(data_dir, "shd_test.h5"), T, t_max)
+        n = int(d["n_classes"]) if "n_classes" in d.files \
+            else CLASSES.get(dataset, int(d["ytr"].max()) + 1)
+        return d["xtr"], d["ytr"], d["xte"], d["yte"], n
+    xtr, ytr = _bin_split(os.path.join(data_dir, f"{dataset}_train.h5"), T, t_max)
+    xte, yte = _bin_split(os.path.join(data_dir, f"{dataset}_test.h5"), T, t_max)
+    n_classes = CLASSES.get(dataset, int(max(ytr.max(), yte.max())) + 1)
     if cache:
-        np.savez(cache_path, xtr=xtr, ytr=ytr, xte=xte, yte=yte)
+        np.savez(cache_path, xtr=xtr, ytr=ytr, xte=xte, yte=yte, n_classes=n_classes)
+    return xtr, ytr, xte, yte, n_classes
+
+
+def load_shd(data_dir, T=100, t_max=1.0, cache=True):
+    xtr, ytr, xte, yte, _ = load_dataset(data_dir, "shd", T, t_max, cache)
     return xtr, ytr, xte, yte
