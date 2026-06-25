@@ -52,6 +52,7 @@ struct Options {
   float gain = 1.0f;
   float inhib = 0.2f;
   float feedback = 1.0f;
+  int reward_mode = 0;               // 1 => three-factor reward-modulated learning
   uint64_t seed = 1;
 };
 
@@ -115,6 +116,7 @@ Options parse(int argc, char** argv) {
     if (arg_v(i, argc, argv, "--gain", o.gain)) continue;
     if (arg_v(i, argc, argv, "--inhib", o.inhib)) continue;
     if (arg_v(i, argc, argv, "--feedback", o.feedback)) continue;
+    if (arg_v(i, argc, argv, "--reward-mode", o.reward_mode)) continue;
     if (arg_v(i, argc, argv, "--seed", o.seed)) continue;
     std::fprintf(stderr, "unknown arg: %s\n", a.c_str());
     usage();
@@ -201,6 +203,7 @@ int main(int argc, char** argv) {
   cfg.surrogate_scale = o.gamma;
   cfg.feedback_scale = o.feedback;
   cfg.train_hidden = (o.train_mode != "readout");
+  cfg.reward_mode = (o.reward_mode != 0);
   cfg.seed = o.seed;
 
   GraphStats gs = compute_stats(g);

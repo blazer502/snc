@@ -17,6 +17,7 @@
 #pragma once
 
 #include <cstdint>
+#include <random>
 #include <vector>
 
 #include "snc/dataset.hpp"
@@ -37,6 +38,12 @@ struct TrainConfig {
   float surrogate_scale = 0.3f;        // gamma in the triangular surrogate
   float feedback_scale = 1.0f;         // random-feedback matrix scale
   bool train_hidden = true;            // false => readout-only (reservoir mode)
+  // Three-factor neuromodulated learning: instead of a supervised per-output
+  // error, sample an action from the output, receive a single scalar reward
+  // (right/wrong), and modulate the eligibility by the reward advantage
+  // (REINFORCE). The brain's dopamine-gated rule; needs no target vector.
+  bool reward_mode = false;
+  float reward_baseline_decay = 0.99f; // EMA decay for the reward baseline
   uint64_t seed = 1;
 };
 
@@ -80,6 +87,8 @@ class Trainer {
   std::vector<float> B_;               // [num_internal * classes] random feedback
   std::vector<int> internal_idx_;      // internal neuron id -> row in B_ (or -1)
   int classes_ = 0;
+  std::mt19937_64 action_rng_;         // samples actions in reward_mode
+  float reward_baseline_ = 0.0f;       // EMA reward (neuromodulator reference)
 
   // Channel -> input neuron ids, resolved once for fast injection.
   std::vector<std::vector<int>> chan_to_neurons_;
