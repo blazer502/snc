@@ -119,7 +119,19 @@ void Connectome::set_edge_weights(const std::vector<float>& w) {
 }
 
 StructReport Connectome::structural_update(const ActivityStats& stats,
-                                           const StructConfig& cfg) {
+                                           const StructConfig& cfg, float reward) {
+  // Reward-modulated rewiring rate: competence = how far reward is above chance,
+  // in [0,1]. Rewire a (1 - competence) fraction of grow_per_epoch (floored), so
+  // the clock searches topology aggressively when reward is low and anneals to a
+  // trickle as the circuit masters the task.
+  int grow_target = cfg.grow_per_epoch;
+  if (cfg.reward_modulated) {
+    const float denom = std::max(1e-3f, 1.0f - cfg.reward_chance);
+    const float comp = std::clamp((reward - cfg.reward_chance) / denom, 0.0f, 1.0f);
+    const float frac = std::clamp(1.0f - comp, cfg.reward_floor, 1.0f);
+    grow_target = std::max(0, static_cast<int>(std::lround(cfg.grow_per_epoch * frac)));
+  }
+
   // --- Prune: K weakest synapses by |weight|, among prune-eligible ones. ---
   struct Cand { float score; int i; int k; };
   std::vector<Cand> cand;
@@ -128,7 +140,7 @@ StructReport Connectome::structural_update(const ActivityStats& stats,
       if (adj_[i][k].age >= cfg.protect_rounds)
         cand.push_back({std::fabs(adj_[i][k].weight), i, k});
 
-  int K = std::min(cfg.grow_per_epoch, static_cast<int>(cand.size()));
+  int K = std::min(grow_target, static_cast<int>(cand.size()));
   if (K > 0) {
     std::nth_element(cand.begin(), cand.begin() + K, cand.end(),
                      [](const Cand& a, const Cand& b) { return a.score < b.score; });

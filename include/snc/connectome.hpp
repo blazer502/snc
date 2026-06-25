@@ -37,6 +37,13 @@ struct StructConfig {
   float locality_window = 0.2f;   // normalized position window for local growth
   int protect_rounds = 2;         // structural rounds a new synapse is prune-immune
   int max_attempts_mult = 8;      // growth attempts = mult * grow_per_epoch
+  // Reward-modulated rewiring: scale the rewire count by recent competence so
+  // the structural clock explores topology when reward is low and consolidates
+  // (anneals plasticity, critical-period-like) as reward rises. Same reward that
+  // drives the three-factor weight rule -> topology and weights co-learn from it.
+  bool reward_modulated = false;
+  float reward_chance = 0.1f;     // reward level treated as zero competence
+  float reward_floor = 0.1f;      // min fraction of grow_per_epoch kept when mastered
   uint64_t seed = 1;
 };
 
@@ -59,8 +66,10 @@ class Connectome {
   void set_edge_weights(const std::vector<float>& w); // write back (same order)
 
   // Prune + grow one structural step using the inner loop's activity stats.
+  // `reward` in [0,1] is the recent performance/reward; when cfg.reward_modulated
+  // it scales the rewire count (low reward -> more rewiring).
   StructReport structural_update(const ActivityStats& stats,
-                                 const StructConfig& cfg);
+                                 const StructConfig& cfg, float reward = 1.0f);
 
   int num_neurons() const { return n_; }
   int num_synapses() const;

@@ -59,6 +59,8 @@ struct Options {
   float gain = 1.0f;
   float locality = 0.2f;
   float feedback = 1.0f;
+  int reward = 0;          // 1 => three-factor reward weight rule (no target vector)
+  int reward_struct = 0;   // 1 => reward-modulated rewiring rate (same reward)
   uint64_t seed = 1;
 };
 
@@ -122,6 +124,8 @@ Options parse(int argc, char** argv) {
     if (arg_v(i, argc, argv, "--gain", o.gain)) continue;
     if (arg_v(i, argc, argv, "--locality", o.locality)) continue;
     if (arg_v(i, argc, argv, "--feedback", o.feedback)) continue;
+    if (arg_v(i, argc, argv, "--reward", o.reward)) continue;
+    if (arg_v(i, argc, argv, "--reward-struct", o.reward_struct)) continue;
     if (arg_v(i, argc, argv, "--seed", o.seed)) continue;
     std::fprintf(stderr, "unknown arg: %s\n", a.c_str());
     usage();
@@ -201,6 +205,7 @@ int main(int argc, char** argv) {
   cfg.surrogate_scale = o.gamma;
   cfg.feedback_scale = o.feedback;
   cfg.train_hidden = true;
+  cfg.reward_mode = (o.reward != 0);
   cfg.seed = o.seed;
 
   StructConfig scfg;
@@ -209,6 +214,8 @@ int main(int argc, char** argv) {
   scfg.w_grow_init = o.w_grow;
   scfg.locality_window = o.locality;
   scfg.protect_rounds = o.protect;
+  scfg.reward_modulated = (o.reward_struct != 0);
+  scfg.reward_chance = classes ? 1.0f / classes : 0.1f;
   scfg.seed = o.seed;
 
   const char* mode = o.grow > 0 ? "dynamic" : "static";
@@ -268,7 +275,8 @@ int main(int argc, char** argv) {
     best_test = std::max(best_test, es.test_acc);
 
     StructReport sr{0, 0, con.num_synapses()};
-    if (o.grow > 0 && r < o.outer - 1) sr = con.structural_update(as, scfg);
+    if (o.grow > 0 && r < o.outer - 1)
+      sr = con.structural_update(as, scfg, static_cast<float>(es.train_acc));
     std::printf("%5d %9d %8d %7d %10.3f %9.3f %12lld\n", r, con.num_synapses(),
                 sr.pruned, sr.grown, es.train_acc, es.test_acc, es.spikes);
     if (csv)
