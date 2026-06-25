@@ -12,6 +12,7 @@ results, and origins.
 | [new-plan.md](new-plan.md) | The repositioning plan (brain-sim → SNN substrate) and phased roadmap. |
 | [../python/README.md](../python/README.md) | The PyTorch bridge: `snc_export` → load graph → surrogate-gradient BPTT (SNN / LM / SHD models). |
 | [voxel-encoding.md](voxel-encoding.md) | Design study: 2-bit vs 1-bit structural voxels (why 2-bit stays). |
+| [three-factor-reward.md](three-factor-reward.md) | A brain-like reward-only learning rule (`--reward-mode`): label-free three-factor plasticity; structure helps 3.4× more than under supervision. |
 
 ## Experiments & results
 

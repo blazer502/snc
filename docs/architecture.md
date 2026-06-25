@@ -36,7 +36,7 @@ backend.
 | `src/runtime/cuda_backend.cu` | three CUDA delivery backends — **atomic / bucket / sort** (`-DSNC_ENABLE_CUDA=ON`) |
 | `src/runtime/cuda_stub.cpp` | no-op `cuda::*` symbols for non-CUDA builds |
 | `include/snc/dataset.hpp`, `src/training/datasets.cpp` | `Dataset` + synthetic generator + MNIST IDX loader |
-| `include/snc/trainer.hpp`, `src/training/trainer.cpp` | frozen-structure **e-prop** weight training (CPU) |
+| `include/snc/trainer.hpp`, `src/training/trainer.cpp` | frozen-structure **e-prop** weight training (CPU); also a **three-factor reward-only** rule (`--reward-mode`, see [three-factor-reward.md](three-factor-reward.md)) |
 | `include/snc/cuda_trainer.hpp`, `src/training/cuda_trainer.cu` | **GPU minibatch e-prop** (≈15× faster) |
 | `include/snc/connectome.hpp`, `src/structure/connectome.cpp` | mutable position-aware connectome + grow/prune/rewire |
 | `src/bench/snc_bench.cpp` | `snc_bench` CLI: build graph, encode, run, report |

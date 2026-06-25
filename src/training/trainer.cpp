@@ -35,6 +35,9 @@ Trainer::Trainer(const SNNGraph& graph, const TrainConfig& cfg)
   std::normal_distribution<float> bn(0.0f, cfg_.feedback_scale);
   B_.resize(static_cast<std::size_t>(n_internal) * classes_);
   for (float& b : B_) b = bn(rng);
+
+  action_rng_.seed(cfg_.seed ^ 0xA5A5C0FFEEULL);
+  reward_baseline_ = 1.0f / classes_;  // start the baseline at chance
 }
 
 void Trainer::set_weights(const std::vector<float>& w) {
@@ -157,9 +160,26 @@ void Trainer::apply_update(const std::vector<double>& elig,
   for (int k = 0; k < classes_; ++k) { p[k] = std::exp(counts[k] - mx); sum += p[k]; }
   for (int k = 0; k < classes_; ++k) p[k] /= static_cast<float>(sum);
 
-  // Output error delta_k = p_k - onehot_k.
+  // Output learning signal delta_k.
   std::vector<float> delta(classes_);
-  for (int k = 0; k < classes_; ++k) delta[k] = p[k] - (k == label ? 1.0f : 0.0f);
+  if (cfg_.reward_mode) {
+    // Three-factor rule: sample an action a ~ softmax(counts), get scalar reward
+    // R = 1[a == label], and use the reward advantage (R - baseline) as the
+    // neuromodulator. delta = (R - b) * (p - onehot(a)) makes w -= lr*delta*E a
+    // REINFORCE ascent: actions better than baseline are reinforced. The label
+    // is only used to score the action -- there is no per-output target vector.
+    std::uniform_real_distribution<float> u(0.0f, 1.0f);
+    float r = u(action_rng_), cdf = 0.0f;
+    int a = classes_ - 1;
+    for (int k = 0; k < classes_; ++k) { cdf += p[k]; if (r <= cdf) { a = k; break; } }
+    const float R = (a == label) ? 1.0f : 0.0f;
+    const float adv = R - reward_baseline_;
+    for (int k = 0; k < classes_; ++k) delta[k] = adv * (p[k] - (k == a ? 1.0f : 0.0f));
+    reward_baseline_ = cfg_.reward_baseline_decay * reward_baseline_ +
+                       (1.0f - cfg_.reward_baseline_decay) * R;
+  } else {
+    for (int k = 0; k < classes_; ++k) delta[k] = p[k] - (k == label ? 1.0f : 0.0f);
+  }
 
   // Per-neuron learning signal L_j.
   std::vector<float> L(g_.num_neurons, 0.0f);
