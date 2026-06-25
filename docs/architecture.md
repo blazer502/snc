@@ -227,7 +227,9 @@ neurons in adjacent layers — targeted at the posts that just lost a synapse an
 biased toward the most-active local pre. Because positions are monotonic in
 index, the locality window is a contiguous index range, so growth is cheap and
 exact. `--grow 0` freezes structure (static baseline) so dynamic vs static can
-be compared at an equal synapse budget and equal epoch count.
+be compared at an equal synapse budget and equal epoch count. `--reward-struct 1`
+makes the rewire count **reward-modulated** (`K` shrinks as competence rises) so
+one reward signal gates both clocks — see [three-factor-reward.md](three-factor-reward.md).
 
 Both timescales can run on the GPU: `--device cuda --batch N` trains each inner
 loop with the batched GPU e-prop trainer (which also returns the per-synapse /

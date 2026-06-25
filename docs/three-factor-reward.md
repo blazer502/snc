@@ -52,12 +52,42 @@ Two findings:
    credit landscape — so it pays off most exactly where learning is hardest.
    Structure isn't just an efficiency knob; it's a *learnability* prior.
 
+## One reward, two timescales: gating the structural clock
+
+The same reward now drives the **slow** structural-plasticity clock, not just the
+weights. The two-timescale clock prunes the weakest synapses and regrows local
+ones at a **fixed** rate `grow_per_epoch`; reward-modulation scales that rate by
+**competence** so the circuit *searches* topology when reward is low and
+*consolidates* as it masters the task — a reward-driven critical-period closure:
+
+```
+competence = clamp((reward - chance) / (1 - chance), 0, 1)   # reward = recent train acc
+rewires    = grow_per_epoch * clamp(1 - competence, floor, 1)
+```
+
+`snc_cotrain --reward 1 --reward-struct 1` couples both: one reward signal trains
+the weights (three-factor REINFORCE) **and** gates the wiring. In a run the rewire
+count anneals on its own as accuracy climbs (e.g. 200 → 83 as train-acc 0.55 → 0.82).
+
+Comparison (MNIST, 256 hidden, e-prop weights, 2 seeds), best test acc · total rewires:
+
+| synapse budget | static | dynamic fixed-rate | **reward-modulated rate** |
+|---|---|---|---|
+| loose (40k) | 0.900 | 0.895 · 4400 | **0.893 · 466** (10× fewer) |
+| tight (8k) | 0.833 | 0.853 · 3900 | **0.844 · 585** (6.7× fewer) |
+
+Reward turns structural plasticity from always-on churn into **competence-gated
+consolidation**: at a loose budget (where rewiring isn't needed) it matches the
+fixed-rate accuracy with **10× fewer** structural changes; at a tight budget
+(where dynamic rewiring helps) it keeps most of the gain at **~7× fewer** rewires.
+`reward_floor` tunes how much late-stage exploration is retained.
+
 ## Honest scope
 
 MNIST is a static task and REINFORCE is higher-variance than the gradient, so
 reward-only sits below supervised in absolute terms — as expected. The point is
-the *capability* (label-free, backprop-free, on-graph learning) and the
-*structure × learnability* interaction, both demonstrated cleanly. Natural next
-steps: genuinely reward-shaped / delayed-reward tasks (where a target vector
-doesn't exist), and unifying this neuromodulator with the structural-plasticity
-clock so weights and wiring learn from one reward signal.
+the *capability* (label-free, backprop-free, on-graph learning), the
+*structure × learnability* interaction, and now *one neuromodulator across both
+timescales* — weights and wiring co-learning from a single reward. Natural next
+step: genuinely reward-shaped / delayed-reward tasks where no target vector
+exists, and biasing *where* growth happens (not just how much) by reward.
