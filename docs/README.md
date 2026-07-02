@@ -10,6 +10,8 @@ results, and origins.
 |---|---|
 | [architecture.md](architecture.md) | The substrate: three-layer separation (structural → compiled CSR graph → runtime), execution model, all CPU/CUDA backends, and the training paths (e-prop CPU+GPU, two-timescale co-training, PyTorch BPTT). The implementation reference. |
 | [new-plan.md](new-plan.md) | The repositioning plan (brain-sim → SNN substrate) and phased roadmap. |
+| [developmental-multicenter-snc.md](developmental-multicenter-snc.md) | Research plan: from monolithic scaling to developmental *connectivity* scaling — specialized centers, adaptive inter-center pathways, a digital nursery, and cross-modal/continual evaluation. |
+| [nursery-v1.md](nursery-v1.md) | The v1 prototype for that plan: a two-center visual↔language agent in a digital nursery. Bidirectional cross-modal grounding from shared experience; structural plasticity + consolidation beats fixed sparsity on naming and continual learning at fewer synapses, approaching the dense ceiling at ~1/10–1/20 the budget. Run with `python3 python/train_nursery.py`. |
 | [../python/README.md](../python/README.md) | The PyTorch bridge: `snc_export` → load graph → surrogate-gradient BPTT (SNN / LM / SHD models). |
 | [voxel-encoding.md](voxel-encoding.md) | Design study: 2-bit vs 1-bit structural voxels (why 2-bit stays). |
 | [three-factor-reward.md](three-factor-reward.md) | A brain-like reward-only learning rule (`--reward-mode`): label-free three-factor plasticity; structure helps 3.4× more than under supervision; the same reward gates the structural clock (`--reward-struct`) → 7–10× fewer rewires. |
