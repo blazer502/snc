@@ -12,7 +12,8 @@ import numpy as np
 from .agent import AgentConfig, DevelopmentalAgent
 from .centers import write_graph_bin
 from .nursery import Nursery, Obj
-from .tasks import run_forgetting, run_naming, run_navigation, run_permanence
+from .tasks import (run_consolidation, run_forgetting, run_naming, run_navigation,
+                    run_permanence)
 
 
 def _check(name, cond):
@@ -107,10 +108,22 @@ def _permanence():
            off["search_success"] < 0.45 and on["search_success"] > off["search_success"] + 0.3)
 
 
+def _consolidation():
+    rows = [run_consolidation(AgentConfig(seed=s), data_seed=s) for s in range(4)]
+    ss = np.mean([r["semantic_seen"] for r in rows])
+    es = np.mean([r["episodic_single_seen"] for r in rows])
+    sn = np.mean([r["semantic_novel"] for r in rows])
+    en = np.mean([r["episodic_novel"] for r in rows])
+    _check("consolidation: replay denoises (semantic seen > single transient trace)",
+           ss > es + 0.1)
+    _check("consolidation: consolidated rule abstracts to unseen combos (> chance and > episodic)",
+           sn > 0.6 and sn > en + 0.1)
+
+
 def run_selftest() -> int:
     print("Developmental Multicenter SNC v1 -- self-test")
     for section in (_env_determinism, _graph_roundtrip, _learning_and_transfer,
-                    _structural_efficiency, _navigation, _permanence):
+                    _structural_efficiency, _navigation, _permanence, _consolidation):
         print(f"\n{section.__name__[1:]}:")
         section()
     print("\nAll self-tests passed.")

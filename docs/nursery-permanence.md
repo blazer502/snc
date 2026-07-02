@@ -87,5 +87,8 @@ lesioned. Means over 8 seeds.
   ambiguous-key memory, and object permanence under real occluders rather than
   removing the objects from the grid.
 
+**Update:** sleep/replay consolidation of episodic traces into a semantic memory
+center is now built — see [nursery-consolidation.md](nursery-consolidation.md).
+
 Code: `python/dev_snc/memory.py`, `tasks.run_permanence`,
 `experiment.run_permanence_suite`; CLI `python/train_nursery.py --perm-seeds N`.

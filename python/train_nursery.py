@@ -10,8 +10,10 @@ import argparse
 import sys
 
 from dev_snc.agent import AgentConfig, DevelopmentalAgent
-from dev_snc.experiment import (format_navigation, format_permanence, format_tables,
-                                run_navigation_suite, run_permanence_suite, run_suite)
+from dev_snc.experiment import (format_consolidation, format_navigation,
+                                format_permanence, format_tables,
+                                run_consolidation_suite, run_navigation_suite,
+                                run_permanence_suite, run_suite)
 
 
 def demo():
@@ -46,6 +48,7 @@ def main(argv=None):
     ap.add_argument("--forget-epochs", type=int, default=25)
     ap.add_argument("--nav-seeds", type=int, default=4, help="seeds for the navigation table (0 to skip)")
     ap.add_argument("--perm-seeds", type=int, default=4, help="seeds for the object-permanence table (0 to skip)")
+    ap.add_argument("--consol-seeds", type=int, default=8, help="seeds for the consolidation table (0 to skip)")
     ap.add_argument("--demo", action="store_true", help="also narrate one agent")
     ap.add_argument("--selftest", action="store_true", help="run assertions and exit")
     args = ap.parse_args(argv)
@@ -66,6 +69,9 @@ def main(argv=None):
     if args.perm_seeds > 0:
         print()
         print(format_permanence(run_permanence_suite(range(args.perm_seeds))))
+    if args.consol_seeds > 0:
+        print()
+        print(format_consolidation(run_consolidation_suite(range(args.consol_seeds))))
     return 0
 
 

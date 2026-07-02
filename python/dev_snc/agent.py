@@ -79,7 +79,6 @@ class DevelopmentalAgent:
 
         # Center metadata graph (plan step 3). visual ids [0,V), language ids [V,V+L).
         self.graph = MulticenterGraph()
-        rule = "fixed"
         self.graph.add_center(Center("visual", "visual", cfg.v_size,
                                      learning_rule="fixed", timescale="fast"))
         self.graph.add_center(Center("language", "language", self.L,

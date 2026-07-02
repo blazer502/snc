@@ -388,3 +388,71 @@ def run_permanence(cfg: AgentConfig, name_epochs: int = 40, motor_episodes: int 
 
     return {"task": "permanence", "memory": memory, "n_objects": n_objects,
             "search_success": ok / trials}
+
+
+# ---------------------------------------------------------------------------
+# Task 5: sleep/replay consolidation -- episodic experience -> semantic memory
+# ---------------------------------------------------------------------------
+def run_consolidation(cfg: AgentConfig, noise: float = 0.3, episodes: int = 12,
+                      holdout: int = 4, data_seed: int = 0) -> dict:
+    """Observe objects with *noisy* property labels (a colour-determined property),
+    keeping each as an episodic trace; then "sleep" and replay those traces into
+    semantic memory. Test property prediction on seen types (does replay denoise?)
+    and on held-out colour x shape combos (does it abstract a generalizable rule?),
+    against an episodic-only baseline (plan §6.2 sleep consolidation)."""
+    from .memory import SemanticMemory
+    from .nursery import COLORS, SHAPES, Obj
+    from .plasticity import VisualEncoder
+
+    nc, ns = len(COLORS), len(SHAPES)
+    rng = np.random.default_rng(data_seed)
+    enc = VisualEncoder(feature_dim(), cfg.v_size, cfg.v_active, seed=cfg.seed)
+
+    types = [(c, s) for c in range(nc) for s in range(ns)]
+    # the property depends only on colour, so it can generalize across shape.
+    color_prop = {c: int(rng.integers(2)) for c in range(nc)}
+    true = {t: color_prop[t[0]] for t in types}
+
+    # hold out some combos, keeping every colour represented in training.
+    train, heldout = None, None
+    for _ in range(200):
+        perm = rng.permutation(len(types))
+        hold = set(perm[:holdout].tolist())
+        tr = [types[i] for i in range(len(types)) if i not in hold]
+        if len({t[0] for t in tr}) == nc:
+            train = tr
+            heldout = [types[i] for i in range(len(types)) if i in hold]
+            break
+    if train is None:
+        raise RuntimeError("could not build a colour-covering split")
+
+    def code(t):
+        return enc.encode(Obj(0, t[0], t[1]).features())
+
+    # interaction: observe train types with noisy labels -> episodic traces.
+    traces = []                    # episodic replay buffer: (visual_code, +/-1)
+    obs = {t: [] for t in train}   # every noisy label seen per type
+    for _e in range(episodes):
+        for t in train:
+            lbl = true[t] if rng.random() > noise else 1 - true[t]
+            traces.append((code(t), 2 * lbl - 1))
+            obs[t].append(lbl)
+
+    # sleep: replay episodic traces into durable semantic memory.
+    sem = SemanticMemory(cfg.v_size)
+    sem.consolidate(traces)
+
+    def acc(pred_fn, group):
+        return float(np.mean([pred_fn(t) == true[t] for t in group])) if group else float("nan")
+
+    return {
+        "task": "consolidation", "noise": noise,
+        "semantic_seen": acc(lambda t: sem.predict(code(t)), train),
+        "semantic_novel": acc(lambda t: sem.predict(code(t)), heldout),
+        # baselines: aggregating traces at query time (majority) denoises like the
+        # consolidated store but needs unbounded storage; a single transient trace
+        # does not. Neither has any trace for an unseen combo -> chance.
+        "episodic_majority_seen": acc(lambda t: int(round(np.mean(obs[t]))), train),
+        "episodic_single_seen": acc(lambda t: obs[t][-1], train),
+        "episodic_novel": acc(lambda t: int(rng.integers(2)), heldout),
+    }

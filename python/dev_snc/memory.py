@@ -50,3 +50,29 @@ class EpisodicMemory:
         """A location the agent saw *some* object at, but without the word binding
         -- the memory-lesion baseline (knows objects existed, not which is which)."""
         return self.locations[int(rng.integers(len(self.locations)))]
+
+
+class SemanticMemory:
+    """Durable, consolidated knowledge (plan §5.2 semantic memory, §6.2 sleep).
+
+    A Hebbian evidence vector over the visual code that predicts a binary property.
+    It is not written during experience; it is built during a *sleep* phase by
+    replaying the episodic traces (`consolidate`). Because replay accumulates
+    evidence, two things emerge that transient episodic memory cannot provide:
+    repeated noisy observations are averaged into a robust rule (denoising), and,
+    since the readout is linear over the (attribute-structured) visual code, the
+    rule generalizes to novel instances it never saw (abstraction)."""
+
+    def __init__(self, code_size: int):
+        self.W = np.zeros(code_size, dtype=np.float32)
+
+    def consolidate(self, traces, replays: int = 1) -> None:
+        """Replay episodic traces into semantic evidence. `traces` is a list of
+        (visual_code, label) with label in {-1, +1}."""
+        for _ in range(replays):
+            for code, label in traces:
+                self.W += label * code
+
+    def predict(self, code: np.ndarray) -> int:
+        """Predict the binary property for a visual code (0/1)."""
+        return int((self.W @ code) >= 0)

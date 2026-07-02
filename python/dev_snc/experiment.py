@@ -95,6 +95,30 @@ def format_permanence(perm) -> str:
     return "\n".join(L)
 
 
+def run_consolidation_suite(seeds=range(8), noise=0.3, episodes=12):
+    """Sleep/replay consolidation of noisy episodic property observations."""
+    from .tasks import run_consolidation
+    return [run_consolidation(AgentConfig(seed=s), noise=noise, episodes=episodes, data_seed=s)
+            for s in seeds]
+
+
+def format_consolidation(rows) -> str:
+    L = ["Sleep/replay consolidation  (property learning, mean over seeds)"]
+    L.append(f"  {'condition':<34} {'seen types':>12} {'unseen combos':>14}")
+    ss, _ = _mean_std(rows, "semantic_seen")
+    sn, _ = _mean_std(rows, "semantic_novel")
+    ms, _ = _mean_std(rows, "episodic_majority_seen")
+    es, _ = _mean_std(rows, "episodic_single_seen")
+    en, _ = _mean_std(rows, "episodic_novel")
+    L.append(f"  {'sleep-consolidated semantic':<34} {ss:>12.2f} {sn:>14.2f}")
+    L.append(f"  {'episodic, aggregate at query':<34} {ms:>12.2f} {en:>14.2f}")
+    L.append(f"  {'episodic, single transient trace':<34} {es:>12.2f} {en:>14.2f}")
+    noise = rows[0]["noise"]
+    L.append(f"  (label noise p={noise}: single-trace ceiling ~= {1 - noise:.2f}, chance = 0.50. "
+             f"aggregation denoises 'seen'; only the consolidated rule abstracts to 'unseen combos'.)")
+    return "\n".join(L)
+
+
 def format_tables(results) -> str:
     L = []
     L.append("Cross-modal grounding  (naming task, mean over seeds)")
