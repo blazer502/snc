@@ -162,3 +162,129 @@ def _with_in_dim(cfg: AgentConfig) -> AgentConfig:
     if cfg.in_dim != feature_dim():
         cfg = AgentConfig(**{**cfg.__dict__, "in_dim": feature_dim()})
     return cfg
+
+
+# ---------------------------------------------------------------------------
+# Task 3: embodied navigation -- fetch the named object
+# ---------------------------------------------------------------------------
+def _manhattan(ax, ay, bx, by):
+    return abs(ax - bx) + abs(ay - by)
+
+
+def run_navigation(cfg: AgentConfig, name_epochs: int = 40, motor_episodes: int = 1500,
+                   fetch_trials: int = 300, data_seed: int = 0, cross_modal: bool = True,
+                   grid: int = 7, n_objects: int = 4, max_steps: int = 30) -> dict:
+    """Learn names, learn to walk (reward-modulated motor), then fetch a named
+    object: recall identifies which object the word means, the spatial+motor loop
+    walks to it. `cross_modal` toggles the language<->vision pathway; with it off,
+    target identification is chance and fetching should fail even though the motor
+    skill is intact (plan RQ5 -> embodied behavior)."""
+    from .navigation import ACTIONS, NavAgent
+    from .nursery import COLORS, SHAPES, Nursery, Obj
+
+    nc, ns = len(COLORS), len(SHAPES)
+    n_objects = min(n_objects, nc)                 # at most one object per distinct colour
+    if n_objects + 1 > grid * grid:
+        raise ValueError("grid too small to place objects and the agent on distinct cells")
+    groups = [list(range(nc)), list(range(nc, nc + ns))]
+    cfg = AgentConfig(**{**cfg.__dict__, "in_dim": feature_dim(), "pathway": cross_modal})
+    agent = NavAgent(nc + ns, groups, cfg, seed=cfg.seed)
+    rng = np.random.default_rng(data_seed)
+
+    # 1) teach compositional names so color-word recall works.
+    combos = _all_combos()
+
+    def name_target(o):
+        t = np.zeros(nc + ns, dtype=np.float32)
+        t[o.color] = 1.0
+        t[nc + o.shape] = 1.0
+        return t
+
+    for e in range(name_epochs):
+        if e > 0:
+            agent.consolidate()
+        for i in rng.permutation(len(combos)):
+            o = combos[i]
+            agent.teach_name(o.features(), name_target(o))
+
+    # 2) learn to walk: reward-modulated motor training on an empty grid.
+    def rand_cell():
+        return int(rng.integers(grid)), int(rng.integers(grid))
+
+    for _ in range(motor_episodes):
+        world = Nursery(grid, grid)
+        ax, ay = rand_cell()
+        world.place_agent(ax, ay)
+        tx, ty = ax, ay
+        while (tx, ty) == (ax, ay):
+            tx, ty = rand_cell()
+        for _step in range(max_steps):
+            code = agent.spatial.encode(world.ax, world.ay, tx, ty)
+            a, pi = agent.motor.act(code)
+            d0 = _manhattan(world.ax, world.ay, tx, ty)
+            world.feet.move(ACTIONS[a])
+            r = float(d0 - _manhattan(world.ax, world.ay, tx, ty))
+            reached = (world.ax, world.ay) == (tx, ty)
+            if reached:
+                r += 5.0
+            agent.motor.learn(code, a, pi, r)
+            if reached:
+                break
+
+    # 3a) motor-only navigation success (reach a given cell, empty grid), for the
+    # trained greedy policy and, as a reproducible chance baseline, a uniform-random
+    # policy under the identical protocol (same grid, step budget, early stop).
+    def motor_eval(policy):
+        ok = 0
+        for _ in range(200):
+            world = Nursery(grid, grid)
+            ax, ay = rand_cell()
+            world.place_agent(ax, ay)
+            tx, ty = ax, ay
+            while (tx, ty) == (ax, ay):
+                tx, ty = rand_cell()
+            for _step in range(max_steps):
+                world.feet.move(ACTIONS[policy(world, tx, ty)])
+                if (world.ax, world.ay) == (tx, ty):
+                    break
+            ok += (world.ax, world.ay) == (tx, ty)
+        return ok / 200
+
+    motor_success = motor_eval(agent.greedy_action)
+    motor_random = motor_eval(lambda w, tx, ty: int(rng.integers(len(ACTIONS))))
+
+    # 3b) fetch: identify the named object by recall, then navigate to it.
+    f_ok = 0
+    steps = 0
+    for _ in range(fetch_trials):
+        used = set()
+
+        def free_cell():
+            while True:
+                c = rand_cell()
+                if c not in used:
+                    used.add(c)
+                    return c
+
+        cols = list(rng.permutation(nc))[:n_objects]
+        objs = [Obj(oid=k, color=int(c), shape=int(rng.integers(ns)), x=(xy := free_cell())[0], y=xy[1])
+                for k, c in enumerate(cols)]
+        world = Nursery(grid, grid, objects=objs)
+        world.place_agent(*free_cell())
+        cmd_color = int(rng.choice(cols))
+        correct = next(o for o in objs if o.color == cmd_color)
+        identified = agent.identify(cmd_color, objs)   # recall (chance if pathway off)
+        step = 0
+        for step in range(max_steps):
+            if _manhattan(world.ax, world.ay, identified.x, identified.y) <= 1:
+                break
+            world.feet.move(ACTIONS[agent.greedy_action(world, identified.x, identified.y)])
+        steps += step + 1
+        f_ok += _manhattan(world.ax, world.ay, correct.x, correct.y) <= 1
+
+    return {
+        "task": "navigation", "cross_modal": cross_modal, "n_objects": n_objects,
+        "motor_success": motor_success, "motor_random": motor_random,
+        "fetch_success": f_ok / fetch_trials,
+        "avg_steps": steps / fetch_trials,
+    }

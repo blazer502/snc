@@ -7,12 +7,14 @@ docs/nursery-v1.md (this prototype).
 """
 from .agent import AgentConfig, DevelopmentalAgent
 from .centers import Center, MulticenterGraph, Pathway
+from .navigation import MotorCenter, NavAgent, SpatialCenter
 from .nursery import Nursery, Obj
-from .tasks import run_forgetting, run_naming
+from .tasks import run_forgetting, run_naming, run_navigation
 
 __all__ = [
     "AgentConfig", "DevelopmentalAgent",
     "Center", "MulticenterGraph", "Pathway",
+    "NavAgent", "SpatialCenter", "MotorCenter",
     "Nursery", "Obj",
-    "run_naming", "run_forgetting",
+    "run_naming", "run_forgetting", "run_navigation",
 ]

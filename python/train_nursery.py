@@ -10,7 +10,8 @@ import argparse
 import sys
 
 from dev_snc.agent import AgentConfig, DevelopmentalAgent
-from dev_snc.experiment import format_tables, run_suite
+from dev_snc.experiment import (format_navigation, format_tables,
+                                run_navigation_suite, run_suite)
 from dev_snc.tasks import run_naming
 
 
@@ -44,6 +45,7 @@ def main(argv=None):
     ap.add_argument("--seeds", type=int, default=8, help="number of seeds to average")
     ap.add_argument("--naming-epochs", type=int, default=40)
     ap.add_argument("--forget-epochs", type=int, default=25)
+    ap.add_argument("--nav-seeds", type=int, default=4, help="seeds for the navigation table (0 to skip)")
     ap.add_argument("--demo", action="store_true", help="also narrate one agent")
     ap.add_argument("--selftest", action="store_true", help="run assertions and exit")
     args = ap.parse_args(argv)
@@ -58,6 +60,9 @@ def main(argv=None):
 
     results = run_suite(range(args.seeds), args.naming_epochs, args.forget_epochs)
     print(format_tables(results))
+    if args.nav_seeds > 0:
+        print()
+        print(format_navigation(run_navigation_suite(range(args.nav_seeds))))
     return 0
 
 

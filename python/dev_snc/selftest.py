@@ -12,7 +12,7 @@ import numpy as np
 from .agent import AgentConfig, DevelopmentalAgent
 from .centers import write_graph_bin
 from .nursery import Nursery, Obj
-from .tasks import run_forgetting, run_naming
+from .tasks import run_forgetting, run_naming, run_navigation
 
 
 def _check(name, cond):
@@ -83,10 +83,23 @@ def _structural_efficiency():
            len(reports) == 2 and sum(r.grown for r in reports) > 0)
 
 
+def _navigation():
+    on = run_navigation(AgentConfig(seed=0), data_seed=0, cross_modal=True,
+                        motor_episodes=1200, fetch_trials=200)
+    off = run_navigation(AgentConfig(seed=0), data_seed=0, cross_modal=False,
+                         motor_episodes=1200, fetch_trials=200)
+    _check("motor: reward-modulated three-factor rule learns to navigate (>=0.9)",
+           on["motor_success"] >= 0.9)
+    _check("fetch: cross-modal recall lets the agent fetch the named object (>=0.7)",
+           on["fetch_success"] >= 0.7)
+    _check("fetch: lesioning the cross-modal pathway drops fetching toward chance",
+           off["fetch_success"] < 0.45 and on["fetch_success"] > off["fetch_success"] + 0.3)
+
+
 def run_selftest() -> int:
     print("Developmental Multicenter SNC v1 -- self-test")
     for section in (_env_determinism, _graph_roundtrip,
-                    _learning_and_transfer, _structural_efficiency):
+                    _learning_and_transfer, _structural_efficiency, _navigation):
         print(f"\n{section.__name__[1:]}:")
         section()
     print("\nAll self-tests passed.")

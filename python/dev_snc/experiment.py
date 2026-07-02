@@ -46,6 +46,32 @@ def run_suite(seeds=range(8), naming_epochs=40, forget_epochs=25):
     return results
 
 
+def run_navigation_suite(seeds=range(4), name_epochs=40, motor_episodes=1500):
+    """Fetch-the-named-object with the cross-modal pathway on vs. off (lesion)."""
+    from .tasks import run_navigation
+    out = {}
+    for cm in (True, False):
+        out[cm] = [run_navigation(AgentConfig(seed=s), data_seed=s, cross_modal=cm,
+                                  name_epochs=name_epochs, motor_episodes=motor_episodes)
+                   for s in seeds]
+    return out
+
+
+def format_navigation(nav) -> str:
+    L = ["Embodied navigation  (fetch the named object, mean over seeds)"]
+    L.append(f"  {'condition':<28} {'motor_success':>13} {'fetch_success':>13} {'avg_steps':>10}")
+    for cm, label in [(True, "cross-modal on (recall)"), (False, "cross-modal off (lesion)")]:
+        rows = nav[cm]
+        ms, _ = _mean_std(rows, "motor_success")
+        fs, _ = _mean_std(rows, "fetch_success")
+        st, _ = _mean_std(rows, "avg_steps")
+        L.append(f"  {label:<28} {ms:>13.2f} {fs:>13.2f} {st:>10.1f}")
+    mr, _ = _mean_std(nav[True], "motor_random")
+    L.append(f"  (motor skill learned by a reward-modulated three-factor rule; uniform-random "
+             f"policy = {mr:.2f}. fetch needs recall.)")
+    return "\n".join(L)
+
+
 def format_tables(results) -> str:
     L = []
     L.append("Cross-modal grounding  (naming task, mean over seeds)")

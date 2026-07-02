@@ -175,5 +175,9 @@ substrate/runtime paper as the follow-on.
   milestones (§7.3 stages 1–2); scale the nursery and move hot pathways onto the
   CUDA runtime (Phase 5).
 
+**Update:** the motor+spatial centers and a reward-exercising task are now built —
+see [nursery-navigation.md](nursery-navigation.md) (fetch the named object; the
+three-factor reward rule is genuinely exercised there).
+
 Code: `python/dev_snc/` (`nursery`, `centers`, `plasticity`, `agent`, `tasks`,
 `experiment`, `selftest`); CLI `python/train_nursery.py`.
