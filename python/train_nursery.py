@@ -11,9 +11,10 @@ import sys
 
 from dev_snc.agent import AgentConfig, DevelopmentalAgent
 from dev_snc.experiment import (format_consolidation, format_navigation,
-                                format_permanence, format_tables,
-                                run_consolidation_suite, run_navigation_suite,
-                                run_permanence_suite, run_suite)
+                                format_permanence, format_structural_consolidation,
+                                format_tables, run_consolidation_suite,
+                                run_navigation_suite, run_permanence_suite,
+                                run_structural_consolidation_suite, run_suite)
 
 
 def demo():
@@ -72,6 +73,9 @@ def main(argv=None):
     if args.consol_seeds > 0:
         print()
         print(format_consolidation(run_consolidation_suite(range(args.consol_seeds))))
+        print()
+        print(format_structural_consolidation(
+            run_structural_consolidation_suite(range(args.consol_seeds))))
     return 0
 
 

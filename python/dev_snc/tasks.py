@@ -391,8 +391,32 @@ def run_permanence(cfg: AgentConfig, name_epochs: int = 40, motor_episodes: int 
 
 
 # ---------------------------------------------------------------------------
-# Task 5: sleep/replay consolidation -- episodic experience -> semantic memory
+# Tasks 5-6: property learning -- episodic experience -> (semantic | structural) memory
 # ---------------------------------------------------------------------------
+def _property_setup(cfg: AgentConfig, holdout: int, rng):
+    """Shared setup for the property-learning tasks: a fixed sparse visual encoder,
+    a colour-determined binary property (so it can generalize across shape), and a
+    colour-covering train / held-out split. Returns (true, train, heldout, code)."""
+    from .nursery import COLORS, SHAPES, Obj
+    from .plasticity import VisualEncoder
+
+    nc, ns = len(COLORS), len(SHAPES)
+    enc = VisualEncoder(feature_dim(), cfg.v_size, cfg.v_active, seed=cfg.seed)
+    types = [(c, s) for c in range(nc) for s in range(ns)]
+    color_prop = {c: int(rng.integers(2)) for c in range(nc)}
+    true = {t: color_prop[t[0]] for t in types}
+    for _ in range(200):
+        perm = rng.permutation(len(types))
+        hold = set(perm[:holdout].tolist())
+        train = [types[i] for i in range(len(types)) if i not in hold]
+        if len({t[0] for t in train}) == nc:
+            heldout = [types[i] for i in range(len(types)) if i in hold]
+            def code(t):
+                return enc.encode(Obj(0, t[0], t[1]).features())
+            return true, train, heldout, code
+    raise RuntimeError("could not build a colour-covering split")
+
+
 def run_consolidation(cfg: AgentConfig, noise: float = 0.3, episodes: int = 12,
                       holdout: int = 4, data_seed: int = 0) -> dict:
     """Observe objects with *noisy* property labels (a colour-determined property),
@@ -401,33 +425,9 @@ def run_consolidation(cfg: AgentConfig, noise: float = 0.3, episodes: int = 12,
     and on held-out colour x shape combos (does it abstract a generalizable rule?),
     against an episodic-only baseline (plan §6.2 sleep consolidation)."""
     from .memory import SemanticMemory
-    from .nursery import COLORS, SHAPES, Obj
-    from .plasticity import VisualEncoder
 
-    nc, ns = len(COLORS), len(SHAPES)
     rng = np.random.default_rng(data_seed)
-    enc = VisualEncoder(feature_dim(), cfg.v_size, cfg.v_active, seed=cfg.seed)
-
-    types = [(c, s) for c in range(nc) for s in range(ns)]
-    # the property depends only on colour, so it can generalize across shape.
-    color_prop = {c: int(rng.integers(2)) for c in range(nc)}
-    true = {t: color_prop[t[0]] for t in types}
-
-    # hold out some combos, keeping every colour represented in training.
-    train, heldout = None, None
-    for _ in range(200):
-        perm = rng.permutation(len(types))
-        hold = set(perm[:holdout].tolist())
-        tr = [types[i] for i in range(len(types)) if i not in hold]
-        if len({t[0] for t in tr}) == nc:
-            train = tr
-            heldout = [types[i] for i in range(len(types)) if i in hold]
-            break
-    if train is None:
-        raise RuntimeError("could not build a colour-covering split")
-
-    def code(t):
-        return enc.encode(Obj(0, t[0], t[1]).features())
+    true, train, heldout, code = _property_setup(cfg, holdout, rng)
 
     # interaction: observe train types with noisy labels -> episodic traces.
     traces = []                    # episodic replay buffer: (visual_code, +/-1)
@@ -455,4 +455,60 @@ def run_consolidation(cfg: AgentConfig, noise: float = 0.3, episodes: int = 12,
         "episodic_majority_seen": acc(lambda t: int(round(np.mean(obs[t]))), train),
         "episodic_single_seen": acc(lambda t: obs[t][-1], train),
         "episodic_novel": acc(lambda t: int(rng.integers(2)), heldout),
+    }
+
+
+def run_structural_consolidation(cfg: AgentConfig, budget: int = 16, noise: float = 0.3,
+                                 episodes: int = 12, holdout: int = 4,
+                                 data_seed: int = 0) -> dict:
+    """Consolidate the noisy property observations into *structure* rather than a
+    dense readout: replay accumulates Hebbian evidence, then developmental pruning
+    keeps only the `budget` most-evidenced synapses (plan §6.3), unifying
+    consolidation with the substrate's slow structural clock. Compare the pruned
+    sparse pathway to the full dense readout and to a random-sparse pathway of the
+    same budget."""
+    from .memory import SemanticMemory
+
+    rng = np.random.default_rng(data_seed)
+    true, train, heldout, code = _property_setup(cfg, holdout, rng)
+
+    traces = []
+    for _e in range(episodes):
+        for t in train:
+            lbl = true[t] if rng.random() > noise else 1 - true[t]
+            traces.append((code(t), 2 * lbl - 1))
+
+    sem = SemanticMemory(cfg.v_size)
+    sem.consolidate(traces)
+
+    def acc(pred_fn, group):
+        return float(np.mean([pred_fn(t) == true[t] for t in group])) if group else float("nan")
+
+    # dense readout. Only ~1/4 of the visual neurons ever fire (sparse code), so
+    # most weights stay 0; report the *effective* (nonzero-weight) wire count, not
+    # the physically-allocated 256, to compare like with like.
+    dense_seen = acc(lambda t: sem.predict(code(t)), train)
+    dense_novel = acc(lambda t: sem.predict(code(t)), heldout)
+    dense_syn = int((sem.W != 0).sum())
+
+    # random-sparse control at the same budget (same evidence weights, random keep),
+    # averaged over several masks so it is not a single high-variance draw.
+    budget = min(budget, cfg.v_size)
+    rand_seen_l, rand_novel_l = [], []
+    for _ in range(8):
+        rmask = np.zeros(cfg.v_size, dtype=bool)
+        rmask[rng.choice(cfg.v_size, budget, replace=False)] = True
+        rand_seen_l.append(acc(lambda t: int(((sem.W * rmask) @ code(t)) >= 0), train))
+        rand_novel_l.append(acc(lambda t: int(((sem.W * rmask) @ code(t)) >= 0), heldout))
+
+    # structural consolidation: prune to the most-evidenced synapses.
+    sem.prune(budget)
+    struct_seen = acc(lambda t: sem.predict(code(t)), train)
+    struct_novel = acc(lambda t: sem.predict(code(t)), heldout)
+
+    return {
+        "task": "structural_consolidation", "budget": budget,
+        "dense_seen": dense_seen, "dense_novel": dense_novel, "dense_syn": dense_syn,
+        "struct_seen": struct_seen, "struct_novel": struct_novel, "struct_syn": sem.num_synapses(),
+        "rand_seen": float(np.mean(rand_seen_l)), "rand_novel": float(np.mean(rand_novel_l)),
     }

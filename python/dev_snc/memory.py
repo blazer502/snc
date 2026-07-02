@@ -65,6 +65,7 @@ class SemanticMemory:
 
     def __init__(self, code_size: int):
         self.W = np.zeros(code_size, dtype=np.float32)
+        self.mask = None    # None = dense; a boolean keep-mask after prune()
 
     def consolidate(self, traces, replays: int = 1) -> None:
         """Replay episodic traces into semantic evidence. `traces` is a list of
@@ -73,6 +74,20 @@ class SemanticMemory:
             for code, label in traces:
                 self.W += label * code
 
+    def prune(self, budget: int) -> None:
+        """Structural consolidation (plan §6.3): keep only the `budget` most-
+        evidenced synapses and prune the rest, compacting the consolidated rule
+        into durable *sparse structure* on the substrate's slow clock -- rather
+        than a dense readout. Evidence magnitude is the growth/keep signal."""
+        keep = np.zeros(self.W.size, dtype=bool)
+        if budget > 0:
+            keep[np.argsort(np.abs(self.W))[self.W.size - budget:]] = True
+        self.mask = keep
+
     def predict(self, code: np.ndarray) -> int:
         """Predict the binary property for a visual code (0/1)."""
-        return int((self.W @ code) >= 0)
+        w = self.W if self.mask is None else self.W * self.mask
+        return int((w @ code) >= 0)
+
+    def num_synapses(self) -> int:
+        return int(self.W.size if self.mask is None else self.mask.sum())

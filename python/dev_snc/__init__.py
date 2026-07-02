@@ -11,12 +11,13 @@ from .memory import EpisodicMemory, SemanticMemory
 from .navigation import MotorCenter, NavAgent, SpatialCenter
 from .nursery import Nursery, Obj
 from .tasks import (run_consolidation, run_forgetting, run_naming, run_navigation,
-                    run_permanence)
+                    run_permanence, run_structural_consolidation)
 
 __all__ = [
     "AgentConfig", "DevelopmentalAgent",
     "Center", "MulticenterGraph", "Pathway",
     "NavAgent", "SpatialCenter", "MotorCenter", "EpisodicMemory", "SemanticMemory",
     "Nursery", "Obj",
-    "run_naming", "run_forgetting", "run_navigation", "run_permanence", "run_consolidation",
+    "run_naming", "run_forgetting", "run_navigation", "run_permanence",
+    "run_consolidation", "run_structural_consolidation",
 ]

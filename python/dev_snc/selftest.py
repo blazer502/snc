@@ -13,7 +13,7 @@ from .agent import AgentConfig, DevelopmentalAgent
 from .centers import write_graph_bin
 from .nursery import Nursery, Obj
 from .tasks import (run_consolidation, run_forgetting, run_naming, run_navigation,
-                    run_permanence)
+                    run_permanence, run_structural_consolidation)
 
 
 def _check(name, cond):
@@ -120,10 +120,23 @@ def _consolidation():
            sn > 0.6 and sn > en + 0.1)
 
 
+def _structural_consolidation():
+    rows = [run_structural_consolidation(AgentConfig(seed=s), data_seed=s) for s in range(4)]
+    st = np.mean([r["struct_seen"] for r in rows])
+    de = np.mean([r["dense_seen"] for r in rows])
+    ra = np.mean([r["rand_seen"] for r in rows])
+    syn, dsyn = rows[0]["struct_syn"], rows[0]["dense_syn"]
+    _check("structural: evidence-pruned pathway matches the dense readout at fewer synapses",
+           st > de - 0.1 and syn < dsyn)
+    _check("structural: evidence-pruning beats random sparsity of the same budget",
+           st > ra + 0.1)
+
+
 def run_selftest() -> int:
     print("Developmental Multicenter SNC v1 -- self-test")
     for section in (_env_determinism, _graph_roundtrip, _learning_and_transfer,
-                    _structural_efficiency, _navigation, _permanence, _consolidation):
+                    _structural_efficiency, _navigation, _permanence, _consolidation,
+                    _structural_consolidation):
         print(f"\n{section.__name__[1:]}:")
         section()
     print("\nAll self-tests passed.")

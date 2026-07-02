@@ -84,7 +84,10 @@ episodic scheme has any trace, so both sit at the 0.50 chance level.
 - Semantic memory is a separate readout, not yet consolidated into the *structural*
   pathways themselves; folding replay into structural growth (grow synapses for
   repeatedly-replayed associations) would unify consolidation with the substrate's
-  slow structural clock.
+  slow structural clock. **Update:** this is now built — see
+  [nursery-structural-consolidation.md](nursery-structural-consolidation.md)
+  (replay-then-prune keeps the discriminative synapses — beating random sparsity at
+  equal budget and approximating the dense readout's effective wiring).
 - Sleep is a single post-hoc phase; interleaving short replay phases during
   interaction (and measuring forgetting across many "days") is the natural
   continual-learning extension.

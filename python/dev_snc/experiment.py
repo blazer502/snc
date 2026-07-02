@@ -119,6 +119,31 @@ def format_consolidation(rows) -> str:
     return "\n".join(L)
 
 
+def run_structural_consolidation_suite(seeds=range(12), budget=16):
+    """Consolidate replayed evidence into sparse structure vs. a dense readout and
+    a random-sparse pathway of the same budget."""
+    from .tasks import run_structural_consolidation
+    return [run_structural_consolidation(AgentConfig(seed=s), budget=budget, data_seed=s)
+            for s in seeds]
+
+
+def format_structural_consolidation(rows) -> str:
+    L = ["Structural consolidation  (prune the replayed rule into sparse structure)"]
+    L.append(f"  {'condition':<34} {'seen types':>12} {'unseen combos':>14} {'synapses':>9}")
+    dsy = int(_mean_std(rows, "dense_syn")[0])
+    ssy = int(_mean_std(rows, "struct_syn")[0])
+    rows_spec = [("dense readout (effective wires)", "dense_seen", "dense_novel", dsy),
+                 ("structural (evidence-pruned)", "struct_seen", "struct_novel", ssy),
+                 ("random-sparse (same budget)", "rand_seen", "rand_novel", ssy)]
+    for label, ks, kn, syn in rows_spec:
+        s, _ = _mean_std(rows, ks)
+        n, _ = _mean_std(rows, kn)
+        L.append(f"  {label:<34} {s:>12.2f} {n:>14.2f} {syn:>9}")
+    L.append("  (developmental pruning keeps the most-evidenced synapses: it beats random "
+             "sparsity of the same budget and approximates the dense readout at a small cost.)")
+    return "\n".join(L)
+
+
 def format_tables(results) -> str:
     L = []
     L.append("Cross-modal grounding  (naming task, mean over seeds)")
