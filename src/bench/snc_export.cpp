@@ -9,7 +9,9 @@
 //
 // Binary layout (all little-endian int32):
 //   magic, N, S, num_input_channels, num_output_channels,
-//   pre[S], post[S], delays[S], role[N], channel[N]
+//   pre[S], post[S], delays[S], role[N], channel[N], center[N]
+// center[N] is a trailing, additive block (developmental center id per neuron,
+// -1 if unassigned). Older readers that stop after channel[N] still work.
 
 #include <algorithm>
 #include <cmath>
@@ -121,6 +123,12 @@ int main(int argc, char** argv) {
   }
   f.write(reinterpret_cast<const char*>(role.data()), (std::streamsize)N * 4);
   f.write(reinterpret_cast<const char*>(channel.data()), (std::streamsize)N * 4);
+  // center[N]: developmental center id per neuron; -1 when the substrate
+  // generators leave it empty (see docs/developmental-multicenter-snc.md §5.2).
+  std::vector<int32_t> center(N, -1);
+  for (int i = 0; i < N && i < static_cast<int>(g.center.size()); ++i)
+    center[i] = g.center[i];
+  f.write(reinterpret_cast<const char*>(center.data()), (std::streamsize)N * 4);
 
   std::printf("wrote %s: %s  N=%d S=%d in=%d out=%d  %s\n", out.c_str(),
               structure.c_str(), N, S, g.num_input_channels, g.num_output_channels,

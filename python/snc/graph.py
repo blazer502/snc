@@ -18,7 +18,13 @@ def load_graph(path):
         delays = np.fromfile(f, dtype="<i4", count=S)
         role = np.fromfile(f, dtype="<i4", count=N)
         channel = np.fromfile(f, dtype="<i4", count=N)
+        # Optional trailing center[N] block (developmental center id per neuron).
+        # Absent in older exports -> default to -1 (no center assigned).
+        center = np.fromfile(f, dtype="<i4", count=N)
+        if center.size != N:
+            center = np.full(N, -1, dtype="<i4")
     return {
         "N": int(N), "S": int(S), "n_in": int(n_in), "n_out": int(n_out),
         "pre": pre, "post": post, "delays": delays, "role": role, "channel": channel,
+        "center": center,
     }

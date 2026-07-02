@@ -55,6 +55,13 @@ struct SNNGraph {
   std::vector<int8_t> sign;          // size num_neurons, +1 / -1
   std::vector<int> channel;          // size num_neurons, -1 if not in/out
 
+  // Developmental center id per neuron (Developmental Multicenter SNC,
+  // docs/developmental-multicenter-snc.md §5.2). -1 = no center assigned. The
+  // pure-substrate generators leave this empty; the developmental layer fills
+  // it. Optional and additive: exporters write -1 when empty, readers tolerate
+  // its absence, so older graph.bin files still load.
+  std::vector<int> center;           // size num_neurons or empty
+
   int num_synapses() const noexcept {
     return static_cast<int>(post_ids.size());
   }
