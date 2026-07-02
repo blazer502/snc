@@ -90,5 +90,9 @@ target among 4 objects is 1/4 = 0.25 (the lesioned row's 0.27).
   object using the memory center; learned obstacle avoidance; and scaling the motor
   learning to a richer action space.
 
+**Update:** object permanence is now built — see
+[nursery-permanence.md](nursery-permanence.md) (a fifth center, episodic memory,
+lets the agent search for a named object it can no longer see).
+
 Code: `python/dev_snc/navigation.py`, `tasks.run_navigation`,
 `experiment.run_navigation_suite`; CLI `python/train_nursery.py --nav-seeds N`.

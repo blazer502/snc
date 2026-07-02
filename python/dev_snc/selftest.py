@@ -12,7 +12,7 @@ import numpy as np
 from .agent import AgentConfig, DevelopmentalAgent
 from .centers import write_graph_bin
 from .nursery import Nursery, Obj
-from .tasks import run_forgetting, run_naming, run_navigation
+from .tasks import run_forgetting, run_naming, run_navigation, run_permanence
 
 
 def _check(name, cond):
@@ -96,10 +96,21 @@ def _navigation():
            off["fetch_success"] < 0.45 and on["fetch_success"] > off["fetch_success"] + 0.3)
 
 
+def _permanence():
+    on = run_permanence(AgentConfig(seed=0), data_seed=0, memory=True,
+                        motor_episodes=1200, trials=150)
+    off = run_permanence(AgentConfig(seed=0), data_seed=0, memory=False,
+                         motor_episodes=1200, trials=150)
+    _check("permanence: episodic memory lets the agent find a hidden named object (>=0.8)",
+           on["search_success"] >= 0.8)
+    _check("permanence: lesioning memory drops search toward chance",
+           off["search_success"] < 0.45 and on["search_success"] > off["search_success"] + 0.3)
+
+
 def run_selftest() -> int:
     print("Developmental Multicenter SNC v1 -- self-test")
-    for section in (_env_determinism, _graph_roundtrip,
-                    _learning_and_transfer, _structural_efficiency, _navigation):
+    for section in (_env_determinism, _graph_roundtrip, _learning_and_transfer,
+                    _structural_efficiency, _navigation, _permanence):
         print(f"\n{section.__name__[1:]}:")
         section()
     print("\nAll self-tests passed.")

@@ -20,7 +20,7 @@ ablation sees exactly the same objects and curriculum.
 import numpy as np
 
 from .agent import AgentConfig, DevelopmentalAgent
-from .nursery import COLORS, SHAPES, Nursery, Obj, feature_dim
+from .nursery import COLORS, SHAPES, Obj, feature_dim
 
 
 def _all_combos():
@@ -171,6 +171,32 @@ def _manhattan(ax, ay, bx, by):
     return abs(ax - bx) + abs(ay - by)
 
 
+def _train_motor(agent, rng, grid, max_steps, episodes):
+    """Reward-modulated motor training on an empty grid: reach a random target
+    cell, shaped by the change in Manhattan distance (shared by nav + permanence)."""
+    from .navigation import ACTIONS
+    from .nursery import Nursery
+    for _ in range(episodes):
+        world = Nursery(grid, grid)
+        ax, ay = int(rng.integers(grid)), int(rng.integers(grid))
+        world.place_agent(ax, ay)
+        tx, ty = ax, ay
+        while (tx, ty) == (ax, ay):
+            tx, ty = int(rng.integers(grid)), int(rng.integers(grid))
+        for _step in range(max_steps):
+            code = agent.spatial.encode(world.ax, world.ay, tx, ty)
+            a, pi = agent.motor.act(code)
+            d0 = _manhattan(world.ax, world.ay, tx, ty)
+            world.feet.move(ACTIONS[a])
+            r = float(d0 - _manhattan(world.ax, world.ay, tx, ty))
+            reached = (world.ax, world.ay) == (tx, ty)
+            if reached:
+                r += 5.0
+            agent.motor.learn(code, a, pi, r)
+            if reached:
+                break
+
+
 def run_navigation(cfg: AgentConfig, name_epochs: int = 40, motor_episodes: int = 1500,
                    fetch_trials: int = 300, data_seed: int = 0, cross_modal: bool = True,
                    grid: int = 7, n_objects: int = 4, max_steps: int = 30) -> dict:
@@ -211,25 +237,7 @@ def run_navigation(cfg: AgentConfig, name_epochs: int = 40, motor_episodes: int 
     def rand_cell():
         return int(rng.integers(grid)), int(rng.integers(grid))
 
-    for _ in range(motor_episodes):
-        world = Nursery(grid, grid)
-        ax, ay = rand_cell()
-        world.place_agent(ax, ay)
-        tx, ty = ax, ay
-        while (tx, ty) == (ax, ay):
-            tx, ty = rand_cell()
-        for _step in range(max_steps):
-            code = agent.spatial.encode(world.ax, world.ay, tx, ty)
-            a, pi = agent.motor.act(code)
-            d0 = _manhattan(world.ax, world.ay, tx, ty)
-            world.feet.move(ACTIONS[a])
-            r = float(d0 - _manhattan(world.ax, world.ay, tx, ty))
-            reached = (world.ax, world.ay) == (tx, ty)
-            if reached:
-                r += 5.0
-            agent.motor.learn(code, a, pi, r)
-            if reached:
-                break
+    _train_motor(agent, rng, grid, max_steps, motor_episodes)
 
     # 3a) motor-only navigation success (reach a given cell, empty grid), for the
     # trained greedy policy and, as a reproducible chance baseline, a uniform-random
@@ -288,3 +296,95 @@ def run_navigation(cfg: AgentConfig, name_epochs: int = 40, motor_episodes: int 
         "fetch_success": f_ok / fetch_trials,
         "avg_steps": steps / fetch_trials,
     }
+
+
+# ---------------------------------------------------------------------------
+# Task 4: object permanence -- search for a named object that is now hidden
+# ---------------------------------------------------------------------------
+def run_permanence(cfg: AgentConfig, name_epochs: int = 40, motor_episodes: int = 1500,
+                   trials: int = 300, data_seed: int = 0, memory: bool = True,
+                   grid: int = 7, n_objects: int = 4, max_steps: int = 30) -> dict:
+    """See objects and name them, binding each name to its location in episodic
+    memory; then the objects are hidden and the agent must *search* for a named
+    one it can no longer see. With the memory center it recalls the location and
+    walks there; lesioned, it can only guess among the seen locations (plan §7.3
+    stage 2 object permanence)."""
+    from .centers import Center
+    from .navigation import ACTIONS, NavAgent
+    from .memory import EpisodicMemory
+    from .nursery import COLORS, SHAPES, Nursery, Obj
+
+    nc, ns = len(COLORS), len(SHAPES)
+    n_objects = min(n_objects, nc)
+    if n_objects + 1 > grid * grid:
+        raise ValueError("grid too small to place objects and the agent on distinct cells")
+    groups = [list(range(nc)), list(range(nc, nc + ns))]
+    cfg = AgentConfig(**{**cfg.__dict__, "in_dim": feature_dim()})
+    agent = NavAgent(nc + ns, groups, cfg, seed=cfg.seed)
+    # register the episodic memory as a fifth center in the graph metadata.
+    agent.graph.add_center(Center("episodic", "episodic", 2 * grid, "hebbian", "slow"))
+    agent.graph.connect("language", "episodic", "excitatory")
+    agent.graph.connect("episodic", "spatial", "predictive")
+    rng = np.random.default_rng(data_seed)
+
+    combos = _all_combos()
+
+    def name_target(o):
+        t = np.zeros(nc + ns, dtype=np.float32)
+        t[o.color] = 1.0
+        t[nc + o.shape] = 1.0
+        return t
+
+    for e in range(name_epochs):
+        if e > 0:
+            agent.consolidate()
+        for i in rng.permutation(len(combos)):
+            o = combos[i]
+            agent.teach_name(o.features(), name_target(o))
+
+    _train_motor(agent, rng, grid, max_steps, motor_episodes)
+
+    def rand_cell():
+        return int(rng.integers(grid)), int(rng.integers(grid))
+
+    ok = 0
+    for _ in range(trials):
+        used = set()
+
+        def free_cell():
+            while True:
+                c = rand_cell()
+                if c not in used:
+                    used.add(c)
+                    return c
+
+        cols = list(rng.permutation(nc))[:n_objects]
+        objs = [Obj(oid=k, color=int(c), shape=int(rng.integers(ns)), x=(xy := free_cell())[0], y=xy[1])
+                for k, c in enumerate(cols)]
+        start = free_cell()
+
+        # observe through the body API: see the scene, name each object, and bind
+        # name -> location in episodic memory. (scene() is a whole-scene view, so
+        # the agent's pose does not affect what is observed.)
+        obs_world = Nursery(grid, grid, objects=objs)
+        mem = EpisodicMemory(nc, grid)
+        for s in obs_world.eyes.scene():
+            color_word = int(agent.lang.name(s["features"])[0])
+            mem.write(color_word, s["x"], s["y"])
+
+        # the objects are now hidden; a colour is commanded and the agent searches
+        # an empty grid from memory alone.
+        cmd_color = int(rng.choice(cols))
+        target = next(o for o in objs if o.color == cmd_color)
+        qx, qy = mem.query(cmd_color) if memory else mem.random_location(rng)
+
+        world = Nursery(grid, grid)
+        world.place_agent(*start)
+        for _step in range(max_steps):
+            if (world.ax, world.ay) == (qx, qy):
+                break
+            world.feet.move(ACTIONS[agent.greedy_action(world, qx, qy)])
+        ok += (world.ax, world.ay) == (target.x, target.y)
+
+    return {"task": "permanence", "memory": memory, "n_objects": n_objects,
+            "search_success": ok / trials}

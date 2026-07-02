@@ -72,6 +72,29 @@ def format_navigation(nav) -> str:
     return "\n".join(L)
 
 
+def run_permanence_suite(seeds=range(4), name_epochs=40, motor_episodes=1500):
+    """Search for a hidden named object with the episodic memory on vs. lesioned."""
+    from .tasks import run_permanence
+    out = {}
+    for mem in (True, False):
+        out[mem] = [run_permanence(AgentConfig(seed=s), data_seed=s, memory=mem,
+                                   name_epochs=name_epochs, motor_episodes=motor_episodes)
+                    for s in seeds]
+    return out
+
+
+def format_permanence(perm) -> str:
+    L = ["Object permanence  (search for a hidden named object, mean over seeds)"]
+    L.append(f"  {'condition':<28} {'search_success':>15}")
+    for mem, label in [(True, "episodic memory on"), (False, "memory lesioned")]:
+        ss, _ = _mean_std(perm[mem], "search_success")
+        L.append(f"  {label:<28} {ss:>15.2f}")
+    n = perm[True][0]["n_objects"]
+    L.append(f"  (memory binds name->location while observing; lesioned -> guess among "
+             f"{n} seen sites = 1/{n})")
+    return "\n".join(L)
+
+
 def format_tables(results) -> str:
     L = []
     L.append("Cross-modal grounding  (naming task, mean over seeds)")
